@@ -1,10 +1,15 @@
 /**
- * GESTOR MULTISPLIT ENTERPRISE v6.5 (EXCEL REPORTING SUITE - RESTORED)
+ * GESTOR MULTISPLIT ENTERPRISE v6.14 (GLOBAL CALENDAR SEARCH)
  * ==================================================================================
- * Versão Restaurada (v6.5):
- * - Funcionalidade de Exportação de Relatório (Excel) mantida.
- * - Meses fixos (Set/Out/Nov) conforme versão anterior.
- * - Cálculo de Crescimento e Auto-Faturamento mantidos.
+ * Atualizações v6.14:
+ * 1. BUSCA GLOBAL NO CALENDÁRIO:
+ * - O campo de busca agora varre TODAS as entregas futuras, não só o mês atual.
+ * - Se encontrar o SKU em outro mês (ex: Dezembro), o calendário SALTA automaticamente
+ * para a data da entrega, permitindo visualizar o evento imediatamente.
+ * 2. ORDENAÇÃO:
+ * - Dados de trânsito ordenados cronologicamente para encontrar a entrega mais próxima.
+ * 3. MANUTENÇÃO:
+ * - Todas as funcionalidades anteriores (NF Toggle, Edição, Relatórios) mantidas.
  * ==================================================================================
  */
 
@@ -17,7 +22,7 @@ import {
   Layers, Search as SearchIcon, Box, AlertTriangle, Bell, Settings, 
   FileText, Truck, Activity, Menu, ChevronDown, Download, RefreshCw,
   ClipboardList, Shield, UserCog, History, Fan, Snowflake, Ship, FileCheck, ChevronLeft,
-  MoreHorizontal, Clock, EyeOff, LayoutGrid, List, DollarSign, Trophy, Zap, FileDown
+  MoreHorizontal, Clock, EyeOff, LayoutGrid, List, DollarSign, Trophy, Zap, FileDown, Pencil, Save, Receipt, ChevronUp
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -29,7 +34,7 @@ import {
 } from 'firebase/firestore';
 
 /* ==================================================================================
- * 1. CONFIGURAÇÃO FIREBASE
+ * 1. CONFIGURAÇÃO FIREBASE E CONSTANTES
  * ================================================================================== */
 
 let firebaseConfig;
@@ -50,6 +55,21 @@ const db = getFirestore(app);
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'multisplit-enterprise-default';
 
 const ALLOWED_BRANDS = ['DAIKIN', 'ELGIN', 'FUJITSU', 'GREE', 'LG', 'SAMSUNG', 'MIDEA'];
+
+const MONTH_CONFIG = [
+  { idx: 0, short: 'jan', label: 'Janeiro', keys: ['jan', 'janeiro', '01'] },
+  { idx: 1, short: 'fev', label: 'Fevereiro', keys: ['fev', 'fevereiro', '02'] },
+  { idx: 2, short: 'mar', label: 'Março', keys: ['mar', 'marco', 'março', '03'] },
+  { idx: 3, short: 'abr', label: 'Abril', keys: ['abr', 'abril', '04'] },
+  { idx: 4, short: 'mai', label: 'Maio', keys: ['mai', 'maio', '05'] },
+  { idx: 5, short: 'jun', label: 'Junho', keys: ['jun', 'junho', '06'] },
+  { idx: 6, short: 'jul', label: 'Julho', keys: ['jul', 'julho', '07'] },
+  { idx: 7, short: 'ago', label: 'Agosto', keys: ['ago', 'agosto', '08'] },
+  { idx: 8, short: 'set', label: 'Setembro', keys: ['set', 'setembro', '09'] },
+  { idx: 9, short: 'out', label: 'Outubro', keys: ['out', 'outubro', '10'] },
+  { idx: 10, short: 'nov', label: 'Novembro', keys: ['nov', 'novembro', '11'] },
+  { idx: 11, short: 'dez', label: 'Dezembro', keys: ['dez', 'dezembro', '12'] }
+];
 
 const BRAND_ASSETS = {
   'SAMSUNG': { logo: 'https://logo.clearbit.com/samsung.com', color: 'blue' },
@@ -86,7 +106,7 @@ const parseExcelDate = (value) => {
 };
 
 const Formatters = {
-  currency: (val) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 }).format(val),
+  currency: (val) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 2 }).format(val),
   number: (val) => new Intl.NumberFormat('pt-BR').format(val),
   decimal: (val) => new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(val),
   percent: (val) => new Intl.NumberFormat('pt-BR', { style: 'percent', minimumFractionDigits: 1 }).format(val),
@@ -161,7 +181,8 @@ const Button = ({ children, onClick, variant = 'primary', size = 'md', icon: Ico
     black: "bg-slate-800 text-white hover:bg-slate-900 border border-transparent",
     ghost: "text-slate-600 hover:bg-slate-100 border-transparent",
     success: "bg-emerald-600 text-white hover:bg-emerald-700 border border-transparent",
-    purple: "bg-purple-600 text-white hover:bg-purple-700 border border-transparent"
+    purple: "bg-purple-600 text-white hover:bg-purple-700 border border-transparent",
+    orange: "bg-orange-50 text-orange-700 hover:bg-orange-100 border border-orange-200"
   };
   const sizes = { xs: "px-2 py-1 text-xs", sm: "px-3 py-1.5 text-xs", md: "px-4 py-2 text-sm", lg: "px-6 py-2.5 text-sm" };
   return (
@@ -243,17 +264,21 @@ const LoginModule = () => {
   );
 };
 
-// --- 4.2: AGENDA (FILTRO RIGOROSO) ---
+// --- 4.2: AGENDA (BUSCA GLOBAL + SALTO NO TEMPO) ---
 const DeliverySchedule = () => {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [transitData, setTransitData] = useState([]);
   const [matrixMap, setMatrixMap] = useState({});
+  const [searchTerm, setSearchTerm] = useState(''); 
 
   useEffect(() => {
     const unsubTransit = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'bi_analytics', 'transit_store'), (s) => {
       if(s.exists()) {
         const raw = s.data().data || {};
-        setTransitData(Object.entries(raw).map(([sku, val]) => ({ sku: normalizeSKU(sku), ...val })));
+        // Ordena por data para facilitar busca do "próximo evento"
+        const entries = Object.entries(raw).map(([sku, val]) => ({ sku: normalizeSKU(sku), ...val }));
+        entries.sort((a, b) => (a.date && b.date) ? new Date(a.date) - new Date(b.date) : 0);
+        setTransitData(entries);
       }
     });
     const unsubMatrix = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'bi_analytics', 'matrix'), (s) => {
@@ -265,6 +290,27 @@ const DeliverySchedule = () => {
     });
     return () => { unsubTransit(); unsubMatrix(); };
   }, []);
+
+  // --- LÓGICA DE BUSCA GLOBAL NO CALENDÁRIO ---
+  useEffect(() => {
+    if (!searchTerm || searchTerm.length < 3 || transitData.length === 0) return;
+
+    const term = searchTerm.toLowerCase();
+    // Busca em TODO o banco de trânsito, não só no mês atual
+    const foundItem = transitData.find(item => {
+       const desc = matrixMap[item.sku] || '';
+       const match = item.sku.toLowerCase().includes(term) || desc.toLowerCase().includes(term);
+       return match && item.date; // Deve ter data definida
+    });
+
+    if (foundItem) {
+       const foundDate = new Date(foundItem.date + 'T12:00:00'); // Ajuste fuso
+       // Se o item encontrado for em um mês diferente do atual, pula para lá
+       if (foundDate.getMonth() !== currentDate.getMonth() || foundDate.getFullYear() !== currentDate.getFullYear()) {
+          setCurrentDate(foundDate);
+       }
+    }
+  }, [searchTerm, transitData, matrixMap]); // Dispara quando digita ou carrega dados
 
   const eventsByDate = useMemo(() => {
     const map = {};
@@ -293,46 +339,70 @@ const DeliverySchedule = () => {
 
   return (
     <div className="space-y-4 animate-fadeIn">
-      <div className="flex justify-between items-center bg-white p-4 rounded-lg border border-slate-200 shadow-sm">
+      <div className="flex flex-col md:flex-row justify-between items-center bg-white p-4 rounded-lg border border-slate-200 shadow-sm gap-4">
         <div>
           <h2 className="text-xl font-bold text-slate-800">Calendário de Recebimento</h2>
           <p className="text-slate-500 text-xs font-medium">Visão mensal de entregas programadas</p>
         </div>
-        <div className="flex items-center gap-2 border border-slate-300 rounded-md bg-white p-1">
-          <button onClick={prevMonth} className="p-1.5 hover:bg-slate-100 rounded text-slate-600"><ChevronLeft className="w-4 h-4"/></button>
-          <span className="font-bold text-slate-800 w-32 text-center text-sm uppercase tracking-wide">
-            {currentDate.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}
-          </span>
-          <button onClick={nextMonth} className="p-1.5 hover:bg-slate-100 rounded text-slate-600"><ChevronRight className="w-4 h-4"/></button>
+        
+        <div className="flex items-center gap-3">
+           <div className="relative w-64">
+              <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <input 
+                value={searchTerm} 
+                onChange={e=>setSearchTerm(e.target.value)} 
+                placeholder="Buscar entrega global (SKU)..." 
+                className="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-md text-sm focus:ring-1 focus:ring-blue-500 outline-none transition-all" 
+              />
+           </div>
+           <div className="flex items-center gap-2 border border-slate-300 rounded-md bg-white p-1">
+             <button onClick={prevMonth} className="p-1.5 hover:bg-slate-100 rounded text-slate-600"><ChevronLeft className="w-4 h-4"/></button>
+             <span className="font-bold text-slate-800 w-32 text-center text-sm uppercase tracking-wide">
+               {currentDate.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}
+             </span>
+             <button onClick={nextMonth} className="p-1.5 hover:bg-slate-100 rounded text-slate-600"><ChevronRight className="w-4 h-4"/></button>
+           </div>
         </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-        {daysInMonth.map((day) => (
-          <Card key={day.dateStr} className={`p-3 flex flex-col h-48 transition-all ${day.events.length > 0 ? 'border-blue-300 ring-1 ring-blue-100 shadow-sm' : 'border-slate-200 bg-slate-50/30'}`}>
-            <div className="flex justify-between items-start mb-2 border-b border-slate-100 pb-2">
-              <span className={`text-xl font-bold ${day.events.length > 0 ? 'text-blue-700' : 'text-slate-400'}`}>{day.date.getDate()}</span>
-              <span className="text-[10px] font-bold uppercase text-slate-500 tracking-wide">{day.date.toLocaleDateString('pt-BR', { weekday: 'short' })}</span>
-            </div>
-            <div className="flex-1 overflow-y-auto custom-scrollbar space-y-1.5">
-              {day.events.length > 0 ? day.events.map((ev, idx) => (
-                <div key={idx} className="bg-white p-2 rounded border border-slate-200 shadow-sm text-[10px]">
-                  <div className="font-bold text-slate-800 truncate mb-0.5" title={ev.desc}>{ev.desc}</div>
-                  <div className="flex justify-between items-center text-slate-500">
-                    <span className="font-mono font-semibold">{ev.sku}</span>
-                    <span className="font-bold text-blue-700 bg-blue-50 px-1.5 rounded border border-blue-100">{ev.qty} un</span>
+        {daysInMonth.map((day) => {
+          // Filtro visual do dia (mantém apenas o que bate com a busca se houver)
+          const dayEvents = day.events.filter(ev => 
+             !searchTerm || 
+             ev.sku.toLowerCase().includes(searchTerm.toLowerCase()) || 
+             ev.desc.toLowerCase().includes(searchTerm.toLowerCase())
+          );
+
+          // Se tem busca e o dia não tem nada relevante, esconde (foco no resultado)
+          if (searchTerm && dayEvents.length === 0) return null;
+
+          return (
+            <Card key={day.dateStr} className={`p-3 flex flex-col h-48 transition-all ${dayEvents.length > 0 ? 'border-blue-300 ring-1 ring-blue-100 shadow-sm' : 'border-slate-200 bg-slate-50/30'}`}>
+              <div className="flex justify-between items-start mb-2 border-b border-slate-100 pb-2">
+                <span className={`text-xl font-bold ${dayEvents.length > 0 ? 'text-blue-700' : 'text-slate-400'}`}>{day.date.getDate()}</span>
+                <span className="text-[10px] font-bold uppercase text-slate-500 tracking-wide">{day.date.toLocaleDateString('pt-BR', { weekday: 'short' })}</span>
+              </div>
+              <div className="flex-1 overflow-y-auto custom-scrollbar space-y-1.5">
+                {dayEvents.length > 0 ? dayEvents.map((ev, idx) => (
+                  <div key={idx} className="bg-white p-2 rounded border border-slate-200 shadow-sm text-[10px]">
+                    <div className="font-bold text-slate-800 truncate mb-0.5" title={ev.desc}>{ev.desc}</div>
+                    <div className="flex justify-between items-center text-slate-500">
+                      <span className="font-mono font-semibold">{ev.sku}</span>
+                      <span className="font-bold text-blue-700 bg-blue-50 px-1.5 rounded border border-blue-100">{ev.qty} un</span>
+                    </div>
                   </div>
-                </div>
-              )) : <div className="h-full flex flex-col items-center justify-center text-slate-300 text-xs italic">Sem entregas</div>}
-            </div>
-          </Card>
-        ))}
+                )) : <div className="h-full flex flex-col items-center justify-center text-slate-300 text-xs italic">{searchTerm ? 'Nenhum resultado neste dia' : 'Sem entregas'}</div>}
+              </div>
+            </Card>
+          );
+        })}
       </div>
     </div>
   );
 };
 
-// --- 4.3: DASHBOARD BI (Export & Fixed Months) ---
+// --- 4.3: DASHBOARD BI ---
 const BIDashboard = ({ user }) => {
   const { addToast } = useToast();
   const [data, setData] = useState([]);
@@ -343,12 +413,25 @@ const BIDashboard = ({ user }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [stockFilter, setStockFilter] = useState('ALL');
   const [hideZeroSales, setHideZeroSales] = useState(false);
-
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportConfig, setExportConfig] = useState({ filename: 'relatorio_vendas', includeZero: false });
 
   const matrixFileRef = useRef(null);
   const transitFileRef = useRef(null);
+
+  const timeContext = useMemo(() => {
+    const today = new Date();
+    const currentMonthIndex = today.getMonth(); 
+    const currentMonth = MONTH_CONFIG[currentMonthIndex];
+    const prevMonthIndex = (currentMonthIndex - 1 + 12) % 12;
+    const prevMonth = MONTH_CONFIG[prevMonthIndex];
+    const last3Months = [
+      MONTH_CONFIG[(currentMonthIndex - 2 + 12) % 12],
+      MONTH_CONFIG[(currentMonthIndex - 1 + 12) % 12],
+      MONTH_CONFIG[currentMonthIndex]
+    ];
+    return { currentMonth, prevMonth, last3Months };
+  }, []);
 
   useEffect(() => {
     const unsubMatrix = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'bi_analytics', 'matrix'), (s) => {
@@ -373,22 +456,19 @@ const BIDashboard = ({ user }) => {
            let brand = 'OUTRA';
            for(const b of ALLOWED_BRANDS) if(desc.includes(b)) { brand = b; break; }
            if(desc.includes('SPRINGER') && brand === 'OUTRA') brand = 'MIDEA';
-           
            let type = 'Outros';
            if(desc.includes('COND') || desc.includes('EXTERNA')) type = 'Condensadora';
            else if(desc.includes('EVAP') || desc.includes('INTERNA')) type = 'Evaporadora';
-
+           const monthlyData = {};
+           MONTH_CONFIG.forEach(m => { monthlyData[m.short] = Formatters.parseMoney(findColumnValue(row, m.keys)); });
            return {
              code: normalizeSKU(findColumnValue(row, ['Código', 'Codigo', 'SKU'])),
              desc, brand, type,
              factory: String(findColumnValue(row, ['Fábrica', 'Ref']) || '').toUpperCase(),
              sales25: Formatters.parseMoney(findColumnValue(row, ['2025', 'Vendas 25', 'Total 25'])),
              sales24: Formatters.parseMoney(findColumnValue(row, ['2024', 'Vendas 2024', 'Total 2024', 'Vendas 24', '24'])), 
-             out: Formatters.parseMoney(findColumnValue(row, ['Out', 'Outubro'])),
-             nov: Formatters.parseMoney(findColumnValue(row, ['Nov', 'Novembro'])),
              stock: Formatters.parseMoney(findColumnValue(row, ['Disp', 'Estoque', 'Saldo'])),
-             ago: Formatters.parseMoney(findColumnValue(row, ['Ago', 'Agosto'])),
-             set: Formatters.parseMoney(findColumnValue(row, ['Set', 'Setembro']))
+             ...monthlyData
            };
         });
         await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'bi_analytics', 'matrix'), { rows: processed, updatedAt: serverTimestamp() });
@@ -401,21 +481,18 @@ const BIDashboard = ({ user }) => {
   const processTransitUpload = async (e) => {
     const file = e.target.files[0]; if(!file) return;
     const reader = new FileReader();
-    
     reader.onload = async (evt) => {
       try {
         const XLSX = window.XLSX; const wb = XLSX.read(evt.target.result, {type:'binary'});
         const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
         const transitMap = {};
         const incomingSKUs = new Set();
-
         json.forEach(r => {
            const sku = normalizeSKU(findColumnValue(r, ['Cod. Produto', 'SKU', 'Código']));
            const qty = parseInt(findColumnValue(r, ['Quantidade', 'Qtd'])) || 0;
            const rawDate = findColumnValue(r, ['Previsão', 'Data']);
            const parsedDate = parseExcelDate(rawDate);
            const dateStr = parsedDate ? parsedDate.toISOString().split('T')[0] : null;
-           
            if(sku && sku.length > 2 && qty > 0 && qty < 99999) { 
              if(!transitMap[sku]) transitMap[sku] = { qty: 0, date: null };
              transitMap[sku].qty += qty;
@@ -423,21 +500,18 @@ const BIDashboard = ({ user }) => {
              incomingSKUs.add(sku);
            }
         });
-
         await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'bi_analytics', 'transit_store'), { data: transitMap, updatedAt: serverTimestamp() });
         
         const ordersRef = collection(db, 'artifacts', appId, 'users', user.uid, 'multisplit_orders');
-        const q = query(ordersRef, where('status', '!=', 'faturado'));
-        const querySnapshot = await getDocs(q);
-        
+        const querySnapshot = await getDocs(ordersRef);
         let updatedOrdersCount = 0;
         let autoInvoicedItemsCount = 0;
-
+        
         for (const docSnapshot of querySnapshot.docs) {
            const orderData = docSnapshot.data();
+           if (orderData.status === 'faturado') continue;
            let orderChanged = false;
            let newItems = [...orderData.items];
-
            newItems = newItems.map(item => {
               const cleanSku = normalizeSKU(item.sku);
               if (incomingSKUs.has(cleanSku)) {
@@ -447,22 +521,12 @@ const BIDashboard = ({ user }) => {
                     if (needed > 0) {
                        orderChanged = true;
                        autoInvoicedItemsCount++;
-                       return {
-                          ...item,
-                          invoiced: item.qty,
-                          scheduled: 0,
-                          history: [...(item.history || []), { 
-                             type: 'Auto-Faturado (Trânsito)', 
-                             qty: needed, 
-                             date: new Date().toISOString().split('T')[0] 
-                          }]
-                       };
+                       return { ...item, invoiced: item.qty, scheduled: 0, history: [...(item.history || []), { type: 'Auto-Faturado (Trânsito)', qty: needed, date: new Date().toISOString().split('T')[0] }] };
                     }
                  }
               }
               return item;
            });
-
            if (orderChanged) {
               updatedOrdersCount++;
               const totalQty = newItems.reduce((acc, i) => acc + i.qty, 0);
@@ -471,12 +535,7 @@ const BIDashboard = ({ user }) => {
               await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'multisplit_orders', docSnapshot.id), { items: newItems, status: newStatus });
            }
         }
-
-        addToast(`Agendamento processado.`, 'success');
-        if (autoInvoicedItemsCount > 0) {
-           setTimeout(() => addToast(`⚡ Auto-Faturamento: ${autoInvoicedItemsCount} itens baixados.`, 'success'), 1000);
-        }
-
+        addToast(`Agendamento processado. ${autoInvoicedItemsCount > 0 ? `Autofaturado: ${autoInvoicedItemsCount} itens.` : ''}`, 'success');
       } catch(err) { console.error(err); addToast("Erro Agendamento.", 'error'); }
     };
     reader.readAsBinaryString(file);
@@ -486,23 +545,18 @@ const BIDashboard = ({ user }) => {
     return data.map(item => {
        const transitInfo = transitData[normalizeSKU(item.code)] || { qty: 0, date: null };
        const transitDate = transitInfo.date ? new Date(transitInfo.date + 'T12:00:00') : null; 
-       
-       // Meses FIXOS
-       const currentMonthSales = item.nov || 0;
-       const previousMonthSales = item.out || 0; 
-
-       const salesLast2Months = (item.out || 0) + (item.nov || 0);
+       const currentMonthSales = item[timeContext.currentMonth.short] || 0;
+       const previousMonthSales = item[timeContext.prevMonth.short] || 0; 
+       const salesLast2Months = currentMonthSales + previousMonthSales;
        const daysElapsed = 61; 
        const dailyAvgSales = salesLast2Months / daysElapsed;
        const totalAvail = (item.stock || 0) + transitInfo.qty;
-       
        let daysOfStock = 0;
        if (dailyAvgSales > 0) daysOfStock = Math.ceil(totalAvail / dailyAvgSales); 
        else if (totalAvail > 0) daysOfStock = 999;
-       
        return { ...item, transitQty: transitInfo.qty, transitDate, currentMonthSales, previousMonthSales, daysOfStock };
     });
-  }, [data, transitData]);
+  }, [data, transitData, timeContext]);
 
   const kpis = useMemo(() => {
     if(!enrichedData.length) return null;
@@ -531,76 +585,38 @@ const BIDashboard = ({ user }) => {
     if (stockFilter === 'LOW') items = items.filter(r => r.daysOfStock < 15);
     if (stockFilter === 'CRITICAL') items = items.filter(r => r.daysOfStock < 7);
     if (stockFilter === 'EXCESS') items = items.filter(r => r.daysOfStock > 120);
-
     const filtered = items.filter(r => {
        const term = searchTerm.toUpperCase();
        return !term || String(r.code).includes(term) || r.desc.includes(term) || r.factory.includes(term);
     });
-    
-    // Vendas Recentes FIXAS
-    const recentSales = [
-      { month: 'SET', val: items.reduce((a,b)=>a+(b.set||0),0) },
-      { month: 'OUT', val: items.reduce((a,b)=>a+(b.out||0),0) },
-      { month: 'NOV', val: items.reduce((a,b)=>a+(b.nov||0),0) }
-    ];
-
+    const recentSales = timeContext.last3Months.map(m => ({ month: m.short.toUpperCase(), val: items.reduce((a,b) => a + (b[m.short] || 0), 0) }));
     const bestSellers = [...items].sort((a,b) => b.sales25 - a.sales25).slice(0, 5);
     const brandKPI = kpis.brands.find(b => b.name === viewBrand);
     const total24 = brandKPI ? brandKPI.val24 : 0;
     const total25 = brandKPI ? brandKPI.val : 0;
     const growth = total24 > 0 ? ((total25 - total24) / total24) : 0;
 
-    return {
-       items: filtered,
-       conds: filtered.filter(r => r.type === 'Condensadora'),
-       evaps: filtered.filter(r => r.type === 'Evaporadora'),
-       others: filtered.filter(r => r.type === 'Outros'),
-       total: total25,
-       stock: items.reduce((a,b)=>a+b.stock,0),
-       recentSales,
-       bestSellers,
-       growth
-    };
-  }, [enrichedData, viewBrand, searchTerm, stockFilter, hideZeroSales, kpis]);
+    return { items: filtered, conds: filtered.filter(r => r.type === 'Condensadora'), evaps: filtered.filter(r => r.type === 'Evaporadora'), others: filtered.filter(r => r.type === 'Outros'), total: total25, stock: items.reduce((a,b)=>a+b.stock,0), recentSales, bestSellers, growth };
+  }, [enrichedData, viewBrand, searchTerm, stockFilter, hideZeroSales, kpis, timeContext]);
 
   const handleExportReport = () => {
     if (!viewBrand) return;
     let itemsToExport = enrichedData.filter(r => r.brand === viewBrand);
-    
-    if (!exportConfig.includeZero) {
-       itemsToExport = itemsToExport.filter(r => r.sales25 > 0);
-    }
-
-    const excelData = itemsToExport.map(item => ({
-       'SKU': item.code,
-       'Descrição': item.desc,
-       'Cód. Fabricante': item.factory,
-       'Vendas 2024': item.sales24 || 0,
-       'Vendas 2025': item.sales25 || 0,
-       'Vendas Setembro': item.set || 0,
-       'Vendas Outubro': item.out || 0,
-       'Vendas Novembro': item.nov || 0,
-       'Estoque Físico': item.stock || 0,
-       'Trânsito': item.transitQty || 0,
-       'Dias de Estoque': item.daysOfStock > 900 ? 'Sem Venda' : item.daysOfStock
-    }));
-
+    if (!exportConfig.includeZero) itemsToExport = itemsToExport.filter(r => r.sales25 > 0);
+    const excelData = itemsToExport.map(item => ({ 'SKU': item.code, 'Descrição': item.desc, 'Cód. Fabricante': item.factory, 'Vendas 2024': item.sales24 || 0, 'Vendas 2025': item.sales25 || 0, [`Vendas ${timeContext.last3Months[0].label}`]: item[timeContext.last3Months[0].short] || 0, [`Vendas ${timeContext.last3Months[1].label}`]: item[timeContext.last3Months[1].short] || 0, [`Vendas ${timeContext.last3Months[2].label}`]: item[timeContext.last3Months[2].short] || 0, 'Estoque Físico': item.stock || 0, 'Trânsito': item.transitQty || 0, 'Dias de Estoque': item.daysOfStock > 900 ? 'Sem Venda' : item.daysOfStock }));
     const ws = window.XLSX.utils.json_to_sheet(excelData);
     const wb = window.XLSX.utils.book_new();
     window.XLSX.utils.book_append_sheet(wb, ws, "Relatório");
-    window.XLSX.writeFile(wb, `${exportConfig.filename || 'Relatorio'}_${viewBrand}.xlsx`);
-    
+    window.XLSX.writeFile(wb, `${exportConfig.filename || 'Relatorio'}_${viewBrand}_${timeContext.currentMonth.short}.xlsx`);
     setExportModalOpen(false);
     addToast('Relatório gerado com sucesso!', 'success');
   };
 
   if(loading) return <div className="h-full flex items-center justify-center"><div className="animate-spin w-8 h-8 border-2 border-blue-700 border-t-transparent rounded-full"></div></div>;
 
-  // --- DETALHE DA MARCA ---
   if (viewBrand && viewData) {
       return (
         <div className="space-y-5 animate-fadeIn">
-          {/* Header */}
           <div className="flex justify-between items-center bg-white p-4 rounded-lg border border-slate-200 shadow-sm">
              <div className="flex items-center gap-4">
                 <Button variant="secondary" size="sm" icon={ArrowLeft} onClick={()=>{setViewBrand(null); setSearchTerm('');}} className="border-slate-300 px-3 text-xs">Voltar</Button>
@@ -608,226 +624,46 @@ const BIDashboard = ({ user }) => {
                    <h2 className="text-xl font-bold text-slate-900">{viewBrand}</h2>
                    <div className="flex items-center gap-2 mt-0.5">
                       <span className="text-xs text-slate-500 font-medium uppercase">Crescimento YoY</span>
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${viewData.growth >= 0 ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
-                         {viewData.growth > 0 ? '+' : ''}{Formatters.percent(viewData.growth)}
-                      </span>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${viewData.growth >= 0 ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'}`}>{viewData.growth > 0 ? '+' : ''}{Formatters.percent(viewData.growth)}</span>
                    </div>
                 </div>
              </div>
              <div className="flex gap-6 items-center">
-               <div className="text-right border-r border-slate-200 pr-6 hidden md:block">
-                 <span className="block text-[10px] font-bold text-slate-400 uppercase">Total 2025</span>
-                 <span className="block text-lg font-bold text-slate-800">{Formatters.number(viewData.total)}</span>
-               </div>
-               <div className="text-right hidden md:block border-r border-slate-200 pr-6">
-                 <span className="block text-[10px] font-bold text-slate-400 uppercase">Estoque Físico</span>
-                 <span className="block text-lg font-bold text-slate-800">{Formatters.number(viewData.stock)}</span>
-               </div>
-               
-               {/* Botão Exportar */}
+               <div className="text-right border-r border-slate-200 pr-6 hidden md:block"><span className="block text-[10px] font-bold text-slate-400 uppercase">Total 2025</span><span className="block text-lg font-bold text-slate-800">{Formatters.number(viewData.total)}</span></div>
+               <div className="text-right hidden md:block border-r border-slate-200 pr-6"><span className="block text-[10px] font-bold text-slate-400 uppercase">Estoque Físico</span><span className="block text-lg font-bold text-slate-800">{Formatters.number(viewData.stock)}</span></div>
                <Button variant="primary" size="sm" icon={FileDown} onClick={() => setExportModalOpen(true)} className="shadow-md">Exportar Relatório</Button>
              </div>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-             <Card className="lg:col-span-2 p-5 flex flex-col">
-                <h3 className="font-bold text-sm text-slate-800 mb-4 flex items-center gap-2"><CalendarIcon className="w-4 h-4 text-slate-400"/> Vendas Últimos 3 Meses</h3>
-                <div className="grid grid-cols-3 gap-4 flex-1">
-                   {viewData.recentSales.map(s => (
-                      <div key={s.month} className="bg-slate-50 rounded border border-slate-100 p-4 text-center flex flex-col justify-center">
-                         <span className="text-xs font-bold text-slate-400 uppercase mb-1">{s.month}</span>
-                         <span className="text-xl font-bold text-blue-700">{Formatters.number(s.val)}</span>
-                      </div>
-                   ))}
-                </div>
-             </Card>
-
-             <Card className="p-5 flex flex-col">
-                <h3 className="font-bold text-sm text-slate-800 mb-3 flex items-center gap-2"><Trophy className="w-4 h-4 text-amber-500"/> Top 5 Produtos</h3>
-                <div className="flex-1 overflow-y-auto custom-scrollbar">
-                   <div className="space-y-2">
-                      {viewData.bestSellers.map((p, i) => (
-                         <div key={i} className="flex justify-between items-center text-xs border-b border-slate-50 last:border-0 pb-2 last:pb-0">
-                            <div className="flex items-center gap-2 overflow-hidden">
-                               <span className="font-bold text-slate-400 w-3">{i+1}.</span>
-                               <span className="truncate font-medium text-slate-700" title={p.desc}>{p.desc.substring(0, 25)}...</span>
-                            </div>
-                            <span className="font-bold text-slate-900">{Formatters.number(p.sales25)}</span>
-                         </div>
-                      ))}
-                   </div>
-                </div>
-             </Card>
+             <Card className="lg:col-span-2 p-5 flex flex-col"><h3 className="font-bold text-sm text-slate-800 mb-4 flex items-center gap-2"><CalendarIcon className="w-4 h-4 text-slate-400"/> Vendas Últimos 3 Meses</h3><div className="grid grid-cols-3 gap-4 flex-1">{viewData.recentSales.map(s => (<div key={s.month} className="bg-slate-50 rounded border border-slate-100 p-4 text-center flex flex-col justify-center"><span className="text-xs font-bold text-slate-400 uppercase mb-1">{s.month}</span><span className="text-xl font-bold text-blue-700">{Formatters.number(s.val)}</span></div>))}</div></Card>
+             <Card className="p-5 flex flex-col"><h3 className="font-bold text-sm text-slate-800 mb-3 flex items-center gap-2"><Trophy className="w-4 h-4 text-amber-500"/> Top 5 Produtos</h3><div className="flex-1 overflow-y-auto custom-scrollbar"><div className="space-y-2">{viewData.bestSellers.map((p, i) => (<div key={i} className="flex justify-between items-center text-xs border-b border-slate-50 last:border-0 pb-2 last:pb-0"><div className="flex items-center gap-2 overflow-hidden"><span className="font-bold text-slate-400 w-3">{i+1}.</span><span className="truncate font-medium text-slate-700" title={p.desc}>{p.desc.substring(0, 25)}...</span></div><span className="font-bold text-slate-900">{Formatters.number(p.sales25)}</span></div>))}</div></div></Card>
           </div>
 
           <Card className="p-0 overflow-hidden">
              <div className="flex flex-col md:flex-row justify-between items-center p-4 border-b border-slate-200 bg-slate-50 gap-4">
-                <div className="flex bg-white border border-slate-300 rounded-md p-0.5">
-                   {[{id:'conds', label:'Condensadoras'},{id:'evaps', label:'Evaporadoras'},{id:'others', label:'Outros'}].map(t => (
-                     <button key={t.id} onClick={()=>setActiveTab(t.id)} className={`px-4 py-1.5 rounded-sm text-xs font-bold transition-all ${activeTab===t.id ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>{t.label}</button>
-                   ))}
-                </div>
-                <div className="flex items-center gap-3">
-                   <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-slate-700 select-none">
-                      <input type="checkbox" checked={hideZeroSales} onChange={()=>setHideZeroSales(!hideZeroSales)} className="rounded text-blue-600 focus:ring-blue-500 border-slate-300" />
-                      Ocultar Sem Vendas
-                   </label>
-                   <select value={stockFilter} onChange={e=>setStockFilter(e.target.value)} className="text-xs border border-slate-300 rounded-md px-2 py-1.5 bg-white font-medium focus:ring-1 focus:ring-blue-500 outline-none cursor-pointer">
-                      <option value="ALL">Todos Status</option>
-                      <option value="CRITICAL">🚨 Crítico (&lt;7d)</option>
-                      <option value="LOW">⚠️ Baixo (&lt;15d)</option>
-                      <option value="EXCESS">📦 Excesso (&gt;120d)</option>
-                   </select>
-                   <div className="relative w-56">
-                      <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
-                      <input value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} placeholder="Buscar SKU..." className="w-full pl-8 pr-3 py-1.5 border border-slate-300 rounded-md text-xs focus:ring-1 focus:ring-blue-500 outline-none" />
-                   </div>
-                </div>
+                <div className="flex bg-white border border-slate-300 rounded-md p-0.5">{[{id:'conds', label:'Condensadoras'},{id:'evaps', label:'Evaporadoras'},{id:'others', label:'Outros'}].map(t => (<button key={t.id} onClick={()=>setActiveTab(t.id)} className={`px-4 py-1.5 rounded-sm text-xs font-bold transition-all ${activeTab===t.id ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>{t.label}</button>))}</div>
+                <div className="flex items-center gap-3"><label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-slate-700 select-none"><input type="checkbox" checked={hideZeroSales} onChange={()=>setHideZeroSales(!hideZeroSales)} className="rounded text-blue-600 focus:ring-blue-500 border-slate-300" />Ocultar Sem Vendas</label><select value={stockFilter} onChange={e=>setStockFilter(e.target.value)} className="text-xs border border-slate-300 rounded-md px-2 py-1.5 bg-white font-medium focus:ring-1 focus:ring-blue-500 outline-none cursor-pointer"><option value="ALL">Todos Status</option><option value="CRITICAL">🚨 Crítico (&lt;7d)</option><option value="LOW">⚠️ Baixo (&lt;15d)</option><option value="EXCESS">📦 Excesso (&gt;120d)</option></select><div className="relative w-56"><SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" /><input value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} placeholder="Buscar SKU..." className="w-full pl-8 pr-3 py-1.5 border border-slate-300 rounded-md text-xs focus:ring-1 focus:ring-blue-500 outline-none" /></div></div>
              </div>
-
-             <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs">
-                   <thead className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200">
-                      <tr>
-                         <th className="px-4 py-3 w-1/3">Produto / SKU</th>
-                         <th className="px-4 py-3 text-right">Venda Ant.</th>
-                         <th className="px-4 py-3 text-right">Venda Atual</th>
-                         <th className="px-4 py-3 text-right">Estoque</th>
-                         <th className="px-4 py-3 text-center">Trânsito</th>
-                         <th className="px-4 py-3 text-center">Cobertura (Dias)</th>
-                      </tr>
-                   </thead>
-                   <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
-                      {(activeTab === 'conds' ? viewData.conds : activeTab === 'evaps' ? viewData.evaps : viewData.others).map((r, i) => {
-                         let daysClass = "text-slate-600 font-mono font-bold";
-                         if(r.daysOfStock < 7) daysClass = "text-red-700 font-bold bg-red-50 px-2 py-0.5 rounded border border-red-100";
-                         else if(r.daysOfStock < 15) daysClass = "text-amber-700 font-bold bg-amber-50 px-2 py-0.5 rounded border border-amber-100";
-                         else if(r.daysOfStock > 120) daysClass = "text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-100";
-
-                         return (
-                           <tr key={i} className="hover:bg-slate-50 transition-colors">
-                              <td className="px-4 py-3">
-                                 <div className="flex flex-col">
-                                    <span className="font-bold text-slate-800 truncate max-w-xs" title={r.desc}>{r.desc}</span>
-                                    <span className="text-[10px] text-slate-500 font-mono mt-0.5">{r.code} • {r.factory}</span>
-                                 </div>
-                              </td>
-                              <td className="px-4 py-3 text-right font-mono text-slate-500">{Formatters.number(r.previousMonthSales)}</td>
-                              <td className="px-4 py-3 text-right font-mono text-slate-800 font-bold">{Formatters.number(r.currentMonthSales)}</td>
-                              <td className="px-4 py-3 text-right font-mono font-bold text-slate-800">{r.stock}</td>
-                              <td className="px-4 py-3 text-center">
-                                 {r.transitQty > 0 ? (
-                                    <div className="inline-block text-center leading-tight bg-blue-50 px-2 py-0.5 rounded border border-blue-100">
-                                       <span className="block font-bold text-blue-700 text-[10px]">{r.transitQty}</span>
-                                       {r.transitDate && <span className="block text-[8px] text-slate-500 mt-0.5">{Formatters.date(r.transitDate)}</span>}
-                                    </div>
-                                 ) : <span className="text-slate-300">-</span>}
-                              </td>
-                              <td className="px-4 py-3 text-center">
-                                 <span className={daysClass}>
-                                    {r.daysOfStock > 900 ? '∞' : Formatters.number(r.daysOfStock)}
-                                 </span>
-                              </td>
-                           </tr>
-                         );
-                      })}
-                   </tbody>
-                </table>
-             </div>
+             <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200"><tr><th className="px-4 py-3 w-1/3">Produto / SKU</th><th className="px-4 py-3 text-right">Venda {timeContext.prevMonth.short.toUpperCase()}</th><th className="px-4 py-3 text-right">Venda {timeContext.currentMonth.short.toUpperCase()}</th><th className="px-4 py-3 text-right">Estoque</th><th className="px-4 py-3 text-center">Trânsito</th><th className="px-4 py-3 text-center">Cobertura (Dias)</th></tr></thead><tbody className="divide-y divide-slate-100 text-slate-700 font-medium">{(activeTab === 'conds' ? viewData.conds : activeTab === 'evaps' ? viewData.evaps : viewData.others).map((r, i) => { let daysClass = "text-slate-600 font-mono font-bold"; if(r.daysOfStock < 7) daysClass = "text-red-700 font-bold bg-red-50 px-2 py-0.5 rounded border border-red-100"; else if(r.daysOfStock < 15) daysClass = "text-amber-700 font-bold bg-amber-50 px-2 py-0.5 rounded border border-amber-100"; else if(r.daysOfStock > 120) daysClass = "text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-100"; return (<tr key={i} className="hover:bg-slate-50 transition-colors"><td className="px-4 py-3"><div className="flex flex-col"><span className="font-bold text-slate-800 truncate max-w-xs" title={r.desc}>{r.desc}</span><span className="text-[10px] text-slate-500 font-mono mt-0.5">{r.code} • {r.factory}</span></div></td><td className="px-4 py-3 text-right font-mono text-slate-500">{Formatters.number(r.previousMonthSales)}</td><td className="px-4 py-3 text-right font-mono text-slate-800 font-bold">{Formatters.number(r.currentMonthSales)}</td><td className="px-4 py-3 text-right font-mono font-bold text-slate-800">{r.stock}</td><td className="px-4 py-3 text-center">{r.transitQty > 0 ? (<div className="inline-block text-center leading-tight bg-blue-50 px-2 py-0.5 rounded border border-blue-100"><span className="block font-bold text-blue-700 text-[10px]">{r.transitQty}</span>{r.transitDate && <span className="block text-[8px] text-slate-500 mt-0.5">{Formatters.date(r.transitDate)}</span>}</div>) : <span className="text-slate-300">-</span>}</td><td className="px-4 py-3 text-center"><span className={daysClass}>{r.daysOfStock > 900 ? '∞' : Formatters.number(r.daysOfStock)}</span></td></tr>);})}</tbody></table></div>
           </Card>
 
-          <Modal isOpen={exportModalOpen} onClose={() => setExportModalOpen(false)} title="Exportar Relatório Executivo" size="sm" 
-             actions={<><Button variant="secondary" onClick={() => setExportModalOpen(false)}>Cancelar</Button><Button onClick={handleExportReport} icon={Download}>Gerar Excel</Button></>}>
-             <div className="space-y-4">
-                <div className="bg-slate-50 p-4 rounded border border-slate-200">
-                   <p className="text-xs font-bold text-slate-500 uppercase mb-1">Marca Selecionada</p>
-                   <p className="text-lg font-bold text-slate-800">{viewBrand}</p>
-                </div>
-                <InputField label="Nome do Arquivo" value={exportConfig.filename} onChange={e => setExportConfig({...exportConfig, filename: e.target.value})} placeholder="Ex: relatorio_samsung_nov" />
-                <div className="flex items-center gap-2 mt-2">
-                   <input type="checkbox" id="includeZero" checked={exportConfig.includeZero} onChange={e => setExportConfig({...exportConfig, includeZero: e.target.checked})} className="rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer" />
-                   <label htmlFor="includeZero" className="text-sm text-slate-700 cursor-pointer font-medium">Incluir produtos sem vendas (Venda 2025 = 0)</label>
-                </div>
-                <p className="text-xs text-slate-400 italic mt-2">O relatório incluirá: SKU, Descrição, Ref., Vendas (2024, 2025, Trimestre), Estoque, Trânsito e Dias de Cobertura.</p>
-             </div>
+          <Modal isOpen={exportModalOpen} onClose={() => setExportModalOpen(false)} title="Exportar Relatório Executivo" size="sm" actions={<><Button variant="secondary" onClick={() => setExportModalOpen(false)}>Cancelar</Button><Button onClick={handleExportReport} icon={Download}>Gerar Excel</Button></>}>
+             <div className="space-y-4"><div className="bg-slate-50 p-4 rounded border border-slate-200"><p className="text-xs font-bold text-slate-500 uppercase mb-1">Marca Selecionada</p><p className="text-lg font-bold text-slate-800">{viewBrand}</p></div><InputField label="Nome do Arquivo" value={exportConfig.filename} onChange={e => setExportConfig({...exportConfig, filename: e.target.value})} placeholder="Ex: relatorio_samsung_nov" /><div className="flex items-center gap-2 mt-2"><input type="checkbox" id="includeZero" checked={exportConfig.includeZero} onChange={e => setExportConfig({...exportConfig, includeZero: e.target.checked})} className="rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer" /><label htmlFor="includeZero" className="text-sm text-slate-700 cursor-pointer font-medium">Incluir produtos sem vendas (Venda 2025 = 0)</label></div><p className="text-xs text-slate-400 italic mt-2">O relatório incluirá: SKU, Descrição, Ref., Vendas (2024, 2025, Trimestre), Estoque, Trânsito e Dias de Cobertura.</p></div>
           </Modal>
         </div>
       );
   }
 
-  // --- DASHBOARD PRINCIPAL ---
   return (
     <div className="space-y-6 animate-fadeIn">
-       <div className="flex flex-col md:flex-row justify-between items-center gap-4 border-b border-slate-200 pb-4">
-         <div>
-            <h2 className="text-2xl font-bold text-slate-900">Visão Geral</h2>
-            <p className="text-slate-500 text-xs font-medium mt-1">Dashboard de Performance Comercial</p>
-         </div>
-         <div className="flex gap-2">
-            <input type="file" ref={matrixFileRef} onChange={processMatrixUpload} className="hidden" accept=".csv,.xlsx" />
-            <Button onClick={()=>matrixFileRef.current.click()} icon={Upload} variant="secondary" size="sm">Upload Matriz</Button>
-            
-            <input type="file" ref={transitFileRef} onChange={processTransitUpload} className="hidden" accept=".csv,.xlsx" />
-            <Button onClick={()=>transitFileRef.current.click()} icon={Ship} variant="black" size="sm">Upload Trânsito</Button>
-         </div>
-       </div>
-
-       {!kpis ? (
-          <div className="py-20 text-center border-2 border-dashed border-slate-300 rounded-lg bg-slate-50">
-             <BarChart3 className="w-12 h-12 text-slate-300 mx-auto mb-3" />
-             <p className="text-slate-700 font-bold text-sm">Nenhum dado carregado</p>
-             <p className="text-slate-500 text-xs mt-1">Realize o upload das planilhas (Matriz e Trânsito) para começar.</p>
-          </div>
-       ) : (
-          <>
-             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                {[
-                  { label: "Vendas (2025)", val: kpis.total25, icon: TrendingUp, color: "text-blue-700 bg-blue-50 border-blue-100" },
-                  { label: "Estoque Físico", val: kpis.stock, icon: Box, color: "text-emerald-700 bg-emerald-50 border-emerald-100" },
-                  { label: "Em Trânsito", val: kpis.transit, icon: Ship, color: "text-purple-700 bg-purple-50 border-purple-100" },
-                  { label: "Fabricantes", val: kpis.brands.length, icon: Layers, color: "text-amber-700 bg-amber-50 border-amber-100" }
-                ].map((stat, i) => (
-                  <Card key={i} className="p-4 flex items-center gap-4 hover:-translate-y-1 transition-transform">
-                     <div className={`w-10 h-10 rounded flex items-center justify-center border ${stat.color}`}>
-                        <stat.icon className="w-5 h-5" />
-                     </div>
-                     <div>
-                        <p className="text-2xl font-bold text-slate-900 leading-none mb-0.5">{Formatters.number(stat.val)}</p>
-                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">{stat.label}</p>
-                     </div>
-                  </Card>
-                ))}
-             </div>
-
-             <div>
-                <h3 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">Performance por Fabricante</h3>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                   {kpis.brands.map(b => (
-                      <Card key={b.name} onClick={()=>{setViewBrand(b.name); setSearchTerm(''); setActiveTab('conds');}} hoverable className="p-5 flex flex-col justify-between h-40 group border-l-[4px] border-l-slate-200 hover:border-l-blue-700">
-                         <div className="flex justify-between items-start">
-                            <span className="font-bold text-lg text-slate-800">{b.name}</span>
-                            <ArrowUpRight className="w-4 h-4 text-slate-300 group-hover:text-blue-700 transition-colors"/>
-                         </div>
-                         <div>
-                            <p className="text-2xl font-bold text-slate-900 tracking-tight">{Formatters.number(b.val)}</p>
-                            <p className="text-[10px] text-slate-400 font-bold uppercase mt-1">Unidades Vendidas</p>
-                            
-                            <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100">
-                               <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">{b.conds} Conds</span>
-                               <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">{b.evaps} Evaps</span>
-                            </div>
-                         </div>
-                      </Card>
-                   ))}
-                </div>
-             </div>
-          </>
-       )}
+       <div className="flex flex-col md:flex-row justify-between items-center gap-4 border-b border-slate-200 pb-4"><div><h2 className="text-2xl font-bold text-slate-900">Visão Geral</h2><p className="text-slate-500 text-xs font-medium mt-1">Dashboard de Performance Comercial</p></div><div className="flex gap-2"><input type="file" ref={matrixFileRef} onChange={processMatrixUpload} className="hidden" accept=".csv,.xlsx" /><Button onClick={()=>matrixFileRef.current.click()} icon={Upload} variant="secondary" size="sm">Upload Matriz</Button><input type="file" ref={transitFileRef} onChange={processTransitUpload} className="hidden" accept=".csv,.xlsx" /><Button onClick={()=>transitFileRef.current.click()} icon={Ship} variant="black" size="sm">Upload Trânsito</Button></div></div>
+       {!kpis ? (<div className="py-20 text-center border-2 border-dashed border-slate-300 rounded-lg bg-slate-50"><BarChart3 className="w-12 h-12 text-slate-300 mx-auto mb-3" /><p className="text-slate-700 font-bold text-sm">Nenhum dado carregado</p><p className="text-slate-500 text-xs mt-1">Realize o upload das planilhas (Matriz e Trânsito) para começar.</p></div>) : (<><div className="grid grid-cols-1 md:grid-cols-4 gap-4">{[{ label: "Vendas (2025)", val: kpis.total25, icon: TrendingUp, color: "text-blue-700 bg-blue-50 border-blue-100" }, { label: "Estoque Físico", val: kpis.stock, icon: Box, color: "text-emerald-700 bg-emerald-50 border-emerald-100" }, { label: "Em Trânsito", val: kpis.transit, icon: Ship, color: "text-purple-700 bg-purple-50 border-purple-100" }, { label: "Fabricantes", val: kpis.brands.length, icon: Layers, color: "text-amber-700 bg-amber-50 border-amber-100" }].map((stat, i) => (<Card key={i} className="p-4 flex items-center gap-4 hover:-translate-y-1 transition-transform"><div className={`w-10 h-10 rounded flex items-center justify-center border ${stat.color}`}><stat.icon className="w-5 h-5" /></div><div><p className="text-2xl font-bold text-slate-900 leading-none mb-0.5">{Formatters.number(stat.val)}</p><p className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">{stat.label}</p></div></Card>))}</div><div><h3 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">Performance por Fabricante</h3><div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">{kpis.brands.map(b => (<Card key={b.name} onClick={()=>{setViewBrand(b.name); setSearchTerm(''); setActiveTab('conds');}} hoverable className="p-5 flex flex-col justify-between h-40 group border-l-[4px] border-l-slate-200 hover:border-l-blue-700"><div className="flex justify-between items-start"><span className="font-bold text-lg text-slate-800">{b.name}</span><ArrowUpRight className="w-4 h-4 text-slate-300 group-hover:text-blue-700 transition-colors"/></div><div><p className="text-2xl font-bold text-slate-900 tracking-tight">{Formatters.number(b.val)}</p><p className="text-[10px] text-slate-400 font-bold uppercase mt-1">Unidades Vendidas</p><div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100"><span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">{b.conds} Conds</span><span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">{b.evaps} Evaps</span></div></div></Card>))}</div></div></>)}
     </div>
   );
 };
 
-// --- 4.4: GESTÃO DE PEDIDOS (Purchase Manager) ---
+// --- 4.4: GESTÃO DE PEDIDOS (Purchase Manager & Item Editor) ---
 const PurchaseManager = ({ user }) => {
   const { addToast } = useToast();
   const [orders, setOrders] = useState([]);
@@ -835,19 +671,85 @@ const PurchaseManager = ({ user }) => {
   const [formData, setFormData] = useState({ orderNumber: '', supplier: 'SAMSUNG', date: new Date().toISOString().split('T')[0], items: [] });
   const [expandedOrder, setExpandedOrder] = useState(null); 
   const [brandFilter, setBrandFilter] = useState('ALL');
+  const [editingId, setEditingId] = useState(null); 
+  
+  const [editingItemIdx, setEditingItemIdx] = useState(null);
+  const [tempItem, setTempItem] = useState(null); 
+  const [expandedNF, setExpandedNF] = useState(new Set()); 
+
+  const [invoiceModalOpen, setInvoiceModalOpen] = useState(false);
+  const [invoiceBrand, setInvoiceBrand] = useState('SAMSUNG');
+  const invoiceFileRef = useRef(null);
   const fileInputRef = useRef(null);
 
   const [actionModal, setActionModal] = useState({ open: false, type: null, item: null, order: null });
   const [actionForm, setActionForm] = useState({ qty: '', date: new Date().toISOString().split('T')[0] });
 
   useEffect(() => {
-    const unsub = onSnapshot(query(collection(db, 'artifacts', appId, 'users', user.uid, 'multisplit_orders'), orderBy('date', 'desc')), 
-      (s) => setOrders(s.docs.map(d => ({ id: d.id, ...d.data() }))), (error) => console.error(error));
+    const unsub = onSnapshot(collection(db, 'artifacts', appId, 'users', user.uid, 'multisplit_orders'), 
+      (s) => {
+         const fetchedOrders = s.docs.map(d => ({ id: d.id, ...d.data() }));
+         fetchedOrders.sort((a, b) => new Date(b.date) - new Date(a.date));
+         setOrders(fetchedOrders);
+      }, 
+      (error) => console.error(error));
     return () => unsub();
   }, [user]);
 
+  const toggleNF = (id) => {
+    const newSet = new Set(expandedNF);
+    if (newSet.has(id)) newSet.delete(id);
+    else newSet.add(id);
+    setExpandedNF(newSet);
+  };
+
   const handleDelete = async (id) => {
     if(confirm('Confirmar exclusão deste pedido?')) { await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'multisplit_orders', id)); addToast('Pedido excluído.', 'success'); }
+  };
+
+  const handleEdit = (order) => {
+    setFormData({
+      orderNumber: order.orderNumber,
+      supplier: order.supplier,
+      date: order.date,
+      items: order.items
+    });
+    setEditingId(order.id);
+    setModalOpen(true);
+    setEditingItemIdx(null); 
+  };
+
+  const startEditItem = (idx, item) => {
+    setEditingItemIdx(idx);
+    setTempItem({...item}); 
+  };
+
+  const cancelEditItem = () => {
+    setEditingItemIdx(null);
+    setTempItem(null);
+  };
+
+  const saveEditItem = () => {
+    const newItems = [...formData.items];
+    newItems[editingItemIdx] = tempItem;
+    setFormData({...formData, items: newItems});
+    setEditingItemIdx(null);
+    setTempItem(null);
+  };
+
+  const addNewItem = () => {
+    const newItem = { id: Date.now(), sku: '', factory: '', desc: 'Novo Produto', qty: 1, cost: 0 };
+    setFormData({...formData, items: [...formData.items, newItem]});
+    setEditingItemIdx(formData.items.length);
+    setTempItem(newItem);
+  };
+
+  const deleteItem = (idx) => {
+    if (confirm('Remover este item?')) {
+        const newItems = formData.items.filter((_, i) => i !== idx);
+        setFormData({...formData, items: newItems});
+        if (editingItemIdx === idx) cancelEditItem();
+    }
   };
 
   const processOrderUpload = (e) => {
@@ -860,6 +762,7 @@ const PurchaseManager = ({ user }) => {
         const items = json.map((r, i) => ({
              id: Date.now() + i,
              sku: normalizeSKU(findColumnValue(r, ['SKU', 'Código'])),
+             factory: String(findColumnValue(r, ['Ref', 'Fábrica', 'Fabricante', 'Part Number']) || ''),
              desc: findColumnValue(r, ['Descrição', 'Produto']),
              qty: parseInt(findColumnValue(r, ['Quantidade', 'Qtd'])) || 1,
              cost: Formatters.parseMoney(findColumnValue(r, ['Custo', 'Valor'])),
@@ -871,21 +774,113 @@ const PurchaseManager = ({ user }) => {
     reader.readAsBinaryString(file);
   };
 
+  const processInvoiceUpload = (e) => {
+    const file = e.target.files[0]; if(!file) return;
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      try {
+        const XLSX = window.XLSX; const wb = XLSX.read(evt.target.result, {type:'binary'});
+        const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+        let itemsInvoiced = 0;
+        let ordersUpdated = 0;
+        const ordersRef = collection(db, 'artifacts', appId, 'users', user.uid, 'multisplit_orders');
+        const snapshot = await getDocs(ordersRef);
+        const targetOrders = snapshot.docs.filter(d => {
+           const data = d.data();
+           return data.supplier === invoiceBrand && data.status !== 'faturado';
+        });
+        if (targetOrders.length === 0) {
+           addToast(`Nenhum pedido pendente encontrado para ${invoiceBrand}.`, 'info');
+           setInvoiceModalOpen(false);
+           return;
+        }
+        const invoiceMap = {};
+        json.forEach(row => {
+           const factoryCode = normalizeSKU(findColumnValue(row, ['COD PRODUTO', 'Código Produto', 'SKU'])); 
+           const qty = parseInt(findColumnValue(row, ['QUANTIDADE COMERCIAL', 'Qtd', 'Quantidade'])) || 0;
+           const nfKey = String(findColumnValue(row, ['CHAVE NFE', 'Chave de Acesso']) || '');
+           const nfNum = String(findColumnValue(row, ['NUM NFE', 'Numero NF', 'NF']) || '');
+           const cost = Formatters.parseMoney(findColumnValue(row, ['VALOR UNITÁRIO', 'Valor Unitario', 'Vlr Unit']));
+           if (factoryCode && qty > 0) {
+              if (!invoiceMap[factoryCode]) invoiceMap[factoryCode] = [];
+              invoiceMap[factoryCode].push({ qty, nfKey, nfNum, cost });
+           }
+        });
+        for (const docSnapshot of targetOrders) {
+           const orderData = docSnapshot.data();
+           let orderChanged = false;
+           let newItems = [...orderData.items];
+           newItems = newItems.map(item => {
+              const orderFactoryRef = normalizeSKU(item.factory);
+              const invoices = invoiceMap[orderFactoryRef];
+              if (invoices && invoices.length > 0) {
+                 let pending = item.qty - (item.invoiced || 0);
+                 if (pending > 0) {
+                    while (pending > 0 && invoices.length > 0) {
+                       const currentInvoice = invoices[0];
+                       const toTake = Math.min(pending, currentInvoice.qty);
+                       item.history = [...(item.history || []), {
+                          type: 'Faturado (NF)',
+                          qty: toTake,
+                          date: new Date().toISOString().split('T')[0],
+                          nfKey: currentInvoice.nfKey,
+                          nfNum: currentInvoice.nfNum,
+                          realCost: currentInvoice.cost
+                       }];
+                       item.invoiced = (item.invoiced || 0) + toTake;
+                       pending -= toTake;
+                       currentInvoice.qty -= toTake;
+                       if (currentInvoice.qty <= 0) {
+                          invoices.shift();
+                       }
+                       orderChanged = true;
+                       itemsInvoiced++;
+                    }
+                 }
+              }
+              return item;
+           });
+           if (orderChanged) {
+              ordersUpdated++;
+              const totalQty = newItems.reduce((acc, i) => acc + i.qty, 0);
+              const totalInv = newItems.reduce((acc, i) => acc + (i.invoiced || 0), 0);
+              const newStatus = totalInv >= totalQty ? 'faturado' : 'parcial';
+              await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'multisplit_orders', docSnapshot.id), { items: newItems, status: newStatus });
+           }
+        }
+        if (itemsInvoiced > 0) {
+            addToast(`Sucesso! ${itemsInvoiced} itens baixados em ${ordersUpdated} pedidos.`, 'success');
+        } else {
+            addToast('Nenhum item correspondente encontrado para baixa.', 'info');
+        }
+        setInvoiceModalOpen(false);
+      } catch(err) { console.error(err); addToast('Erro ao processar arquivo de notas.', 'error'); }
+    };
+    reader.readAsBinaryString(file);
+  };
+
   const saveOrder = async () => {
     if(!formData.items.length) return addToast('Adicione itens ao pedido.', 'error');
-    await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'multisplit_orders'), { ...formData, status: 'pendente', createdAt: serverTimestamp() });
-    setModalOpen(false); addToast('Pedido criado com sucesso.', 'success'); setFormData({ orderNumber: '', supplier: 'SAMSUNG', date: new Date().toISOString().split('T')[0], items: [] });
+    if (editingItemIdx !== null) return addToast('Finalize a edição do item antes de salvar.', 'error'); 
+    if (editingId) {
+      await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'multisplit_orders', editingId), { ...formData });
+      addToast('Pedido atualizado com sucesso.', 'success');
+    } else {
+      await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'multisplit_orders'), { ...formData, status: 'pendente', createdAt: serverTimestamp() });
+      addToast('Pedido criado com sucesso.', 'success');
+    }
+    setModalOpen(false);
+    setEditingId(null);
+    setFormData({ orderNumber: '', supplier: 'SAMSUNG', date: new Date().toISOString().split('T')[0], items: [] });
   };
 
   const handleItemAction = async () => {
     const { item, type, order } = actionModal;
     const qty = parseInt(actionForm.qty);
     if(qty <= 0) return;
-
     const orderRef = doc(db, 'artifacts', appId, 'users', user.uid, 'multisplit_orders', order.id);
     const newItems = [...order.items];
     const idx = newItems.findIndex(i => i.id === item.id);
-    
     if (type === 'invoice') {
        newItems[idx].invoiced = (newItems[idx].invoiced || 0) + qty;
        if (newItems[idx].scheduled > 0) newItems[idx].scheduled = Math.max(0, newItems[idx].scheduled - qty);
@@ -894,11 +889,9 @@ const PurchaseManager = ({ user }) => {
        newItems[idx].scheduled = (newItems[idx].scheduled || 0) + qty;
        newItems[idx].history.push({ type: 'Agendado', qty, date: actionForm.date });
     }
-
     const totalQty = newItems.reduce((acc, i) => acc + i.qty, 0);
     const totalInv = newItems.reduce((acc, i) => acc + (i.invoiced || 0), 0);
     const status = totalInv === 0 ? 'pendente' : totalInv >= totalQty ? 'faturado' : 'parcial';
-
     await updateDoc(orderRef, { items: newItems, status });
     setActionModal({ open: false, type: null, item: null, order: null });
     addToast('Item atualizado.', 'success');
@@ -907,87 +900,70 @@ const PurchaseManager = ({ user }) => {
   return (
     <div className="space-y-6 animate-fadeIn">
       <div className="flex justify-between items-center border-b border-slate-200 pb-4">
-         <div>
-            <h2 className="text-2xl font-bold text-slate-900">Pedidos de Compra</h2>
-            <p className="text-slate-500 text-xs font-medium mt-1">Gerenciamento de Supply Chain</p>
-         </div>
-         <Button onClick={() => setModalOpen(true)} icon={Plus} variant="primary" size="md">Novo Pedido</Button>
+         <div><h2 className="text-2xl font-bold text-slate-900">Pedidos de Compra</h2><p className="text-slate-500 text-xs font-medium mt-1">Gerenciamento de Supply Chain</p></div>
+         <div className="flex gap-2"><Button onClick={() => setInvoiceModalOpen(true)} icon={FileCheck} variant="black" size="md" className="bg-slate-800 hover:bg-slate-700">Baixa por Relatório NF</Button><Button onClick={() => { setEditingId(null); setFormData({ orderNumber: '', supplier: 'SAMSUNG', date: new Date().toISOString().split('T')[0], items: [] }); setModalOpen(true); }} icon={Plus} variant="primary" size="md">Novo Pedido</Button></div>
       </div>
-
-      <div className="flex gap-2 border-b border-slate-200 overflow-x-auto pb-1">
-         <button onClick={() => setBrandFilter('ALL')} className={`px-4 py-2 text-xs font-bold border-b-4 transition-all ${brandFilter==='ALL' ? 'border-slate-900 text-slate-900 bg-slate-50' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>TODOS</button>
-         {ALLOWED_BRANDS.slice(0, 6).map(b => (
-            <button key={b} onClick={() => setBrandFilter(b)} className={`px-4 py-2 text-xs font-bold border-b-4 transition-all ${brandFilter===b ? 'border-blue-700 text-blue-800 bg-blue-50' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>{b}</button>
-         ))}
-      </div>
-
+      <div className="flex gap-2 border-b border-slate-200 overflow-x-auto pb-1"><button onClick={() => setBrandFilter('ALL')} className={`px-4 py-2 text-xs font-bold border-b-4 transition-all ${brandFilter==='ALL' ? 'border-slate-900 text-slate-900 bg-slate-50' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>TODOS</button>{ALLOWED_BRANDS.slice(0, 6).map(b => (<button key={b} onClick={() => setBrandFilter(b)} className={`px-4 py-2 text-xs font-bold border-b-4 transition-all ${brandFilter===b ? 'border-blue-700 text-blue-800 bg-blue-50' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>{b}</button>))}</div>
       <div className="space-y-4">
          {orders.filter(o => brandFilter === 'ALL' || o.supplier === brandFilter).map(order => {
            const total = order.items.reduce((a,b)=>a+(b.cost*b.qty),0);
            const isExpanded = expandedOrder === order.id;
-
            return (
              <Card key={order.id} className="overflow-hidden border border-slate-200 transition-all hover:shadow-md">
-                <div className="flex flex-col md:flex-row items-center justify-between p-4 bg-white hover:bg-slate-50 cursor-pointer" onClick={()=>setExpandedOrder(isExpanded ? null : order.id)}>
-                   <div className="flex items-center gap-4 w-full md:w-auto">
-                      <div className="p-2 bg-slate-100 rounded border border-slate-200"><FileText className="w-5 h-5 text-slate-600"/></div>
-                      <div>
-                         <div className="flex items-center gap-2">
-                            <span className="font-bold text-base text-slate-900">#{order.orderNumber}</span>
-                            <span className="text-xs text-slate-400">|</span>
-                            <span className="text-xs font-bold text-slate-600 uppercase">{order.supplier}</span>
-                         </div>
-                         <span className="text-xs text-slate-500 font-medium mt-0.5 block">{Formatters.date(order.date)}</span>
-                      </div>
-                   </div>
-                   
-                   <div className="flex items-center gap-6 w-full md:w-auto mt-4 md:mt-0 justify-between md:justify-end">
-                      <div className="text-right">
-                         <span className="block text-[10px] font-bold text-slate-400 uppercase">Valor Total</span>
-                         <span className="block text-lg font-bold text-slate-900">{Formatters.currency(total)}</span>
-                      </div>
-                      <StatusBadge status={order.status} />
-                      <div className="flex gap-2">
-                        <Button variant="ghost" size="sm" icon={Trash2} onClick={(e)=>{e.stopPropagation(); handleDelete(order.id)}} className="text-slate-400 hover:text-red-600 hover:bg-red-50"/>
-                        <ChevronDown className={`w-5 h-5 text-slate-400 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`}/>
-                      </div>
-                   </div>
-                </div>
-
+                <div className="flex flex-col md:flex-row items-center justify-between p-4 bg-white hover:bg-slate-50 cursor-pointer" onClick={()=>setExpandedOrder(isExpanded ? null : order.id)}><div className="flex items-center gap-4 w-full md:w-auto"><div className="p-2 bg-slate-100 rounded border border-slate-200"><FileText className="w-5 h-5 text-slate-600"/></div><div><div className="flex items-center gap-2"><span className="font-bold text-base text-slate-900">#{order.orderNumber}</span><span className="text-xs text-slate-400">|</span><span className="text-xs font-bold text-slate-600 uppercase">{order.supplier}</span></div><span className="text-xs text-slate-500 font-medium mt-0.5 block">{Formatters.date(order.date)}</span></div></div><div className="flex items-center gap-6 w-full md:w-auto mt-4 md:mt-0 justify-between md:justify-end"><div className="text-right"><span className="block text-[10px] font-bold text-slate-400 uppercase">Valor Total</span><span className="block text-lg font-bold text-slate-900">{Formatters.currency(total)}</span></div><StatusBadge status={order.status} /><div className="flex gap-2"><Button variant="ghost" size="sm" icon={Pencil} onClick={(e)=>{e.stopPropagation(); handleEdit(order)}} className="text-slate-400 hover:text-blue-600 hover:bg-blue-50"/><Button variant="ghost" size="sm" icon={Trash2} onClick={(e)=>{e.stopPropagation(); handleDelete(order.id)}} className="text-slate-400 hover:text-red-600 hover:bg-red-50"/><ChevronDown className={`w-5 h-5 text-slate-400 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`}/></div></div></div>
                 {isExpanded && (
                    <div className="border-t border-slate-200 bg-slate-50 p-4 animate-fadeIn">
                       <div className="bg-white rounded border border-slate-200 overflow-hidden shadow-sm">
                         <table className="w-full text-left text-xs">
-                           <thead className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200">
-                              <tr>
-                                 <th className="px-4 py-2">Item / SKU</th>
-                                 <th className="px-4 py-2 text-center">Qtd</th>
-                                 <th className="px-4 py-2 text-center">Faturado</th>
-                                 <th className="px-4 py-2 text-center">Agendado</th>
-                                 <th className="px-4 py-2 text-right">Ações</th>
-                              </tr>
-                           </thead>
+                           <thead className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200"><tr><th className="px-4 py-2">Item / SKU</th><th className="px-4 py-2 text-center">Qtd</th><th className="px-4 py-2 text-center">Faturado</th><th className="px-4 py-2 text-center">Agendado</th><th className="px-4 py-2 text-right">Ações</th></tr></thead>
                            <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
                              {order.items.map((item, idx) => {
                                 const pending = item.qty - (item.invoiced || 0) - (item.scheduled || 0);
+                                const hasNF = item.history && item.history.some(h => h.nfNum);
+                                const itemUniqueId = `${order.id}-${idx}`; // ID Único para o toggle
+                                const isNFExpanded = expandedNF.has(itemUniqueId);
+
                                 return (
-                                   <tr key={idx} className="hover:bg-slate-50">
-                                      <td className="px-4 py-2">
-                                         <div className="font-bold text-slate-800 text-xs truncate max-w-xs" title={item.desc}>{item.desc}</div>
-                                         <div className="text-[10px] text-slate-500 font-mono mt-0.5">{item.sku}</div>
-                                      </td>
-                                      <td className="px-4 py-2 text-center font-bold text-slate-800">{item.qty}</td>
-                                      <td className="px-4 py-2 text-center text-emerald-700 font-bold">{item.invoiced || 0}</td>
-                                      <td className="px-4 py-2 text-center text-purple-700 font-bold">{item.scheduled || 0}</td>
-                                      <td className="px-4 py-2 text-right">
-                                         {pending > 0 ? (
-                                            <div className="flex justify-end gap-2">
-                                               <Button variant="success" size="xs" onClick={() => { setActionModal({ open: true, type: 'invoice', item, order }); setActionForm({ qty: pending, date: new Date().toISOString().split('T')[0] }); }}>Faturar</Button>
-                                               <Button variant="purple" size="xs" onClick={() => { setActionModal({ open: true, type: 'schedule', item, order }); setActionForm({ qty: pending, date: new Date().toISOString().split('T')[0] }); }}>Agendar</Button>
+                                   <React.Fragment key={idx}>
+                                      <tr className="hover:bg-slate-50">
+                                         <td className="px-4 py-2">
+                                            <div className="font-bold text-slate-800 text-xs truncate max-w-xs" title={item.desc}>{item.desc}</div>
+                                            <div className="text-[10px] text-slate-500 font-mono mt-0.5 flex items-center gap-2">
+                                               {item.sku}
+                                               {item.factory && <span className="bg-slate-100 text-slate-600 px-1 rounded border border-slate-200">Ref: {item.factory}</span>}
+                                               {hasNF && (
+                                                  <button onClick={() => toggleNF(itemUniqueId)} className={`px-1.5 py-0.5 rounded text-[9px] font-bold flex items-center gap-1 transition-colors ${isNFExpanded ? 'bg-blue-600 text-white' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'}`}>
+                                                     <Receipt className="w-3 h-3"/> NF {isNFExpanded ? <ChevronUp className="w-3 h-3"/> : <ChevronDown className="w-3 h-3"/>}
+                                                  </button>
+                                               )}
                                             </div>
-                                         ) : <span className="text-[10px] font-bold text-emerald-700 uppercase bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">Concluído</span>}
-                                      </td>
-                                   </tr>
+                                         </td>
+                                         <td className="px-4 py-2 text-center font-bold text-slate-800">{item.qty}</td>
+                                         <td className="px-4 py-2 text-center text-emerald-700 font-bold">{item.invoiced || 0}</td>
+                                         <td className="px-4 py-2 text-center text-purple-700 font-bold">{item.scheduled || 0}</td>
+                                         <td className="px-4 py-2 text-right">
+                                            {pending > 0 ? (
+                                               <div className="flex justify-end gap-2">
+                                                  <Button variant="success" size="xs" onClick={() => { setActionModal({ open: true, type: 'invoice', item, order }); setActionForm({ qty: pending, date: new Date().toISOString().split('T')[0] }); }}>Faturar</Button>
+                                                  <Button variant="orange" size="xs" onClick={() => { setActionModal({ open: true, type: 'schedule', item, order }); setActionForm({ qty: pending, date: new Date().toISOString().split('T')[0] }); }}>Agendar</Button>
+                                               </div>
+                                            ) : <span className="text-[10px] font-bold text-emerald-700 uppercase bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">Concluído</span>}
+                                         </td>
+                                      </tr>
+                                      {/* Detalhes da Nota Fiscal (Expansível) */}
+                                      {hasNF && isNFExpanded && item.history.filter(h => h.nfNum).map((h, hIdx) => (
+                                         <tr key={`${idx}-h-${hIdx}`} className="bg-blue-50/50 border-b border-blue-100 animate-fadeIn">
+                                            <td colSpan="5" className="px-4 py-2">
+                                               <div className="grid grid-cols-1 md:grid-cols-4 gap-2 text-[10px] text-slate-700">
+                                                  <div className="flex flex-col"><span className="font-bold text-slate-500 uppercase">Nota Fiscal</span><span className="font-mono font-bold">{h.nfNum}</span></div>
+                                                  <div className="flex flex-col"><span className="font-bold text-slate-500 uppercase">Qtd Faturada</span><span className="font-bold">{h.qty} un</span></div>
+                                                  <div className="flex flex-col"><span className="font-bold text-slate-500 uppercase">Custo Real (NF)</span><span className="font-bold text-emerald-700">{Formatters.currency(h.realCost)}</span></div>
+                                                  <div className="flex flex-col"><span className="font-bold text-slate-500 uppercase">Chave de Acesso</span><span className="font-mono truncate" title={h.nfKey}>{h.nfKey}</span></div>
+                                               </div>
+                                            </td>
+                                         </tr>
+                                      ))}
+                                   </React.Fragment>
                                 );
                              })}
                            </tbody>
@@ -1000,56 +976,18 @@ const PurchaseManager = ({ user }) => {
          })}
       </div>
 
-      <Modal isOpen={modalOpen} onClose={()=>setModalOpen(false)} title="Novo Pedido de Compra" size="lg" actions={<><Button variant="secondary" onClick={()=>setModalOpen(false)}>Cancelar</Button><Button onClick={saveOrder}>Criar Pedido</Button></>}>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-           <InputField label="Nº Pedido (PO)" value={formData.orderNumber} onChange={e=>setFormData({...formData, orderNumber: e.target.value})} placeholder="Ex: PO-2025-001" />
-           <div className="space-y-1">
-              <label className="block text-xs font-bold text-slate-700">Fornecedor</label>
-              <select className="w-full bg-white border border-slate-300 rounded-md py-2 px-3 text-sm outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600" value={formData.supplier} onChange={e=>setFormData({...formData, supplier:e.target.value})}>
-                 {ALLOWED_BRANDS.map(b => <option key={b} value={b}>{b}</option>)}
-              </select>
-           </div>
-           <InputField type="date" label="Data Emissão" value={formData.date} onChange={e=>setFormData({...formData, date:e.target.value})} />
-        </div>
-        <div className="border-2 border-dashed border-slate-300 rounded-lg p-6 text-center hover:bg-slate-50 transition-colors relative cursor-pointer group">
-           <input type="file" className="absolute inset-0 opacity-0 cursor-pointer" ref={fileInputRef} onChange={processOrderUpload} />
-           <Upload className="w-8 h-8 text-slate-400 mx-auto mb-2 group-hover:scale-110 transition-transform" />
-           <p className="text-sm font-bold text-slate-700">Importar itens (Excel/CSV)</p>
-           <p className="text-xs text-slate-500 mt-0.5">Arraste ou clique para selecionar</p>
-        </div>
-        {formData.items.length > 0 && (
-           <div className="mt-4 border rounded border-slate-200 overflow-hidden">
-              <div className="bg-slate-50 px-4 py-2 border-b border-slate-200 flex justify-between items-center">
-                 <span className="text-xs font-bold text-slate-700 uppercase">{formData.items.length} Itens Carregados</span>
-              </div>
-              <div className="max-h-48 overflow-y-auto">
-                 <table className="w-full text-left text-xs font-medium">
-                    <tbody className="divide-y divide-slate-100">
-                       {formData.items.map((i,k) => (
-                          <tr key={k}>
-                             <td className="px-4 py-2 truncate max-w-xs text-slate-700">{i.desc}</td>
-                             <td className="px-4 py-2 text-right font-mono font-bold">{i.qty}</td>
-                          </tr>
-                       ))}
-                    </tbody>
-                 </table>
-              </div>
-           </div>
-        )}
+      <Modal isOpen={modalOpen} onClose={()=>setModalOpen(false)} title={editingId ? "Editar Pedido" : "Novo Pedido de Compra"} size="lg" actions={<><Button variant="secondary" onClick={()=>setModalOpen(false)}>Cancelar</Button><Button onClick={saveOrder}>{editingId ? "Salvar Pedido" : "Criar Pedido"}</Button></>}>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4"><InputField label="Nº Pedido (PO)" value={formData.orderNumber} onChange={e=>setFormData({...formData, orderNumber: e.target.value})} placeholder="Ex: PO-2025-001" /><div className="space-y-1"><label className="block text-xs font-bold text-slate-700">Fornecedor</label><select className="w-full bg-white border border-slate-300 rounded-md py-2 px-3 text-sm outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600" value={formData.supplier} onChange={e=>setFormData({...formData, supplier:e.target.value})}>{ALLOWED_BRANDS.map(b => <option key={b} value={b}>{b}</option>)}</select></div><InputField type="date" label="Data Emissão" value={formData.date} onChange={e=>setFormData({...formData, date:e.target.value})} /></div>
+        <div className="flex justify-between items-center mb-2"><span className="text-xs font-bold text-slate-600 uppercase">Itens do Pedido ({formData.items.length})</span><div className="flex gap-2"><label className="flex items-center gap-2 cursor-pointer bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded text-xs font-medium text-slate-700 transition-colors"><input type="file" className="hidden" ref={fileInputRef} onChange={processOrderUpload} /><Upload className="w-3.5 h-3.5" /> Importar Excel</label><button onClick={addNewItem} className="flex items-center gap-2 bg-blue-50 hover:bg-blue-100 text-blue-700 px-3 py-1.5 rounded text-xs font-bold border border-blue-200 transition-colors"><Plus className="w-3.5 h-3.5" /> Add Manual</button></div></div>
+        <div className="border rounded border-slate-200 overflow-hidden bg-white max-h-[300px] overflow-y-auto"><table className="w-full text-left text-xs"><thead className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200 sticky top-0 z-10"><tr><th className="px-3 py-2 w-20">SKU</th><th className="px-3 py-2 w-24">Ref. Fábrica</th><th className="px-3 py-2">Produto</th><th className="px-3 py-2 w-16 text-center">Qtd</th><th className="px-3 py-2 w-24 text-right">Custo Unit.</th><th className="px-3 py-2 w-20 text-center">Ações</th></tr></thead><tbody className="divide-y divide-slate-100">{formData.items.map((item, idx) => { const isEditing = editingItemIdx === idx; if (isEditing) { return (<tr key={idx} className="bg-blue-50/50"><td className="p-1"><input className="w-full border rounded p-1 text-xs" value={tempItem.sku} onChange={e=>setTempItem({...tempItem, sku: e.target.value})} placeholder="SKU" /></td><td className="p-1"><input className="w-full border rounded p-1 text-xs" value={tempItem.factory} onChange={e=>setTempItem({...tempItem, factory: e.target.value})} placeholder="Ref." /></td><td className="p-1"><input className="w-full border rounded p-1 text-xs" value={tempItem.desc} onChange={e=>setTempItem({...tempItem, desc: e.target.value})} /></td><td className="p-1"><input type="number" className="w-full border rounded p-1 text-xs text-center" value={tempItem.qty} onChange={e=>setTempItem({...tempItem, qty: parseInt(e.target.value)||0})} /></td><td className="p-1"><input type="number" className="w-full border rounded p-1 text-xs text-right" value={tempItem.cost} onChange={e=>setTempItem({...tempItem, cost: parseFloat(e.target.value)||0})} /></td><td className="p-1 text-center"><div className="flex justify-center gap-1"><button onClick={saveEditItem} className="p-1 text-emerald-600 hover:bg-emerald-100 rounded"><Save className="w-3.5 h-3.5"/></button><button onClick={cancelEditItem} className="p-1 text-slate-400 hover:bg-slate-100 rounded"><X className="w-3.5 h-3.5"/></button></div></td></tr>); } return (<tr key={idx} className="hover:bg-slate-50 group"><td className="px-3 py-2 font-mono text-slate-500">{item.sku}</td><td className="px-3 py-2 font-mono text-slate-400">{item.factory}</td><td className="px-3 py-2 truncate max-w-xs">{item.desc}</td><td className="px-3 py-2 text-center font-bold">{item.qty}</td><td className="px-3 py-2 text-right text-slate-600">{Formatters.currency(item.cost)}</td><td className="px-3 py-2 text-center"><div className="flex justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"><button onClick={()=>startEditItem(idx, item)} className="p-1 text-blue-600 hover:bg-blue-50 rounded"><Pencil className="w-3.5 h-3.5"/></button><button onClick={()=>deleteItem(idx)} className="p-1 text-red-400 hover:bg-red-50 rounded"><Trash2 className="w-3.5 h-3.5"/></button></div></td></tr>); })}</tbody></table>{formData.items.length === 0 && <div className="p-8 text-center text-slate-400 text-xs italic">Nenhum item no pedido.</div>}</div>
       </Modal>
 
-      <Modal isOpen={actionModal.open} onClose={() => setActionModal({ ...actionModal, open: false })} title={actionModal.type === 'invoice' ? "Registrar Faturamento" : "Agendar Recebimento"} size="sm" 
-         actions={<><Button variant="secondary" onClick={() => setActionModal({ ...actionModal, open: false })}>Cancelar</Button><Button onClick={handleItemAction}>Salvar</Button></>}>
-         <div className="space-y-4">
-            <div className="bg-slate-50 p-3 rounded border border-slate-200">
-               <p className="text-[10px] font-bold text-slate-500 uppercase mb-1">Item Selecionado</p>
-               <p className="text-sm font-bold text-slate-800">{actionModal.item?.desc}</p>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-               <InputField label="Quantidade" type="number" value={actionForm.qty} onChange={e => setActionForm({ ...actionForm, qty: e.target.value })} />
-               <InputField label="Data Efetiva" type="date" value={actionForm.date} onChange={e => setActionForm({ ...actionForm, date: e.target.value })} />
-            </div>
-         </div>
+      <Modal isOpen={actionModal.open} onClose={() => setActionModal({ ...actionModal, open: false })} title={actionModal.type === 'invoice' ? "Registrar Faturamento" : "Agendar Recebimento"} size="sm" actions={<><Button variant="secondary" onClick={() => setActionModal({ ...actionModal, open: false })}>Cancelar</Button><Button onClick={handleItemAction}>Salvar</Button></>}>
+         <div className="space-y-4"><div className="bg-slate-50 p-3 rounded border border-slate-200"><p className="text-[10px] font-bold text-slate-500 uppercase mb-1">Item Selecionado</p><p className="text-sm font-bold text-slate-800">{actionModal.item?.desc}</p></div><div className="grid grid-cols-2 gap-4"><InputField label="Quantidade" type="number" value={actionForm.qty} onChange={e => setActionForm({ ...actionForm, qty: e.target.value })} /><InputField label="Data Efetiva" type="date" value={actionForm.date} onChange={e => setActionForm({ ...actionForm, date: e.target.value })} /></div></div>
+      </Modal>
+
+      <Modal isOpen={invoiceModalOpen} onClose={() => setInvoiceModalOpen(false)} title="Reconciliação Automática de NF" size="md" actions={<><Button variant="secondary" onClick={() => setInvoiceModalOpen(false)}>Cancelar</Button></>}>
+         <div className="space-y-5"><div className="bg-blue-50 border border-blue-100 p-4 rounded-md"><h4 className="text-sm font-bold text-blue-800 flex items-center gap-2"><Info className="w-4 h-4"/> Instruções</h4><p className="text-xs text-blue-700 mt-1">Selecione a marca e faça upload do relatório de Notas Fiscais (Excel/CSV). O sistema irá cruzar o <strong>Código do Produto da Nota (X)</strong> com a <strong>Ref. Fábrica do Pedido</strong>.</p></div><div className="space-y-2"><label className="block text-xs font-bold text-slate-700 uppercase">Selecione a Marca</label><div className="flex flex-wrap gap-2">{ALLOWED_BRANDS.map(b => (<button key={b} onClick={() => setInvoiceBrand(b)} className={`px-4 py-2 text-xs font-bold rounded border transition-all ${invoiceBrand===b ? 'bg-slate-800 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>{b}</button>))}</div></div><div className="border-2 border-dashed border-slate-300 rounded-lg p-8 text-center hover:bg-slate-50 transition-colors relative cursor-pointer group"><input type="file" className="absolute inset-0 opacity-0 cursor-pointer" ref={invoiceFileRef} onChange={processInvoiceUpload} /><div className="w-12 h-12 bg-white rounded-full shadow-sm flex items-center justify-center mx-auto mb-3 group-hover:scale-110 transition-transform"><FileCheck className="w-6 h-6 text-emerald-600" /></div><p className="text-sm font-bold text-slate-700">Upload Relatório de Faturamento</p><p className="text-xs text-slate-500 mt-1">Formatos: .xlsx ou .csv</p></div></div>
       </Modal>
     </div>
   );
@@ -1068,54 +1006,15 @@ export default function AppContainer() {
     return onAuthStateChanged(auth, (u) => { setUser(u); setLoading(false); });
   }, []);
 
-  if (loading) return <div className="h-screen flex items-center justify-center bg-slate-50"><div className="animate-spin w-8 h-8 border-2 border-slate-800 border-t-transparent rounded-full"></div></div>;
+  if (loading) return <div className="h-screen flex items-center justify-center bg-slate-50"><div className="animate-spin w-8 h-8 border-2 border-blue-700 border-t-transparent rounded-full"></div></div>;
   if (!user) return <LoginModule />;
 
   return (
     <ToastProvider>
       <div className="min-h-screen bg-slate-50 font-sans text-slate-900 flex">
         {/* Sidebar Fixa */}
-        <aside className="w-64 bg-slate-900 text-slate-300 flex-shrink-0 flex flex-col h-screen fixed left-0 top-0 border-r border-slate-800 z-50">
-           <div className="h-16 flex items-center px-6 border-b border-slate-800 bg-slate-950">
-              <Activity className="w-5 h-5 text-blue-500 mr-2" />
-              <span className="font-bold text-lg text-white tracking-tight">Climario<span className="text-slate-500">ERP</span></span>
-           </div>
-           
-           <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
-              <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-3 mb-2 mt-2">Gestão</div>
-              <button onClick={() => setCurrentView('dashboard')} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors ${currentView === 'dashboard' ? 'bg-blue-900/40 text-blue-400 border border-blue-900/50' : 'hover:bg-slate-800 hover:text-white'}`}>
-                 <LayoutGrid className="w-4 h-4" /> Dashboard
-              </button>
-              <button onClick={() => setCurrentView('schedule')} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors ${currentView === 'schedule' ? 'bg-blue-900/40 text-blue-400 border border-blue-900/50' : 'hover:bg-slate-800 hover:text-white'}`}>
-                 <CalendarCheck className="w-4 h-4" /> Calendário
-              </button>
-              <button onClick={() => setCurrentView('purchases')} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors ${currentView === 'purchases' ? 'bg-blue-900/40 text-blue-400 border border-blue-900/50' : 'hover:bg-slate-800 hover:text-white'}`}>
-                 <List className="w-4 h-4" /> Pedidos de Compra
-              </button>
-           </nav>
-
-           <div className="p-4 border-t border-slate-800 bg-slate-950">
-              <div className="flex items-center gap-3 mb-4 px-1">
-                 <div className="w-8 h-8 rounded bg-slate-800 flex items-center justify-center font-bold text-xs text-white">AD</div>
-                 <div className="overflow-hidden">
-                    <p className="text-sm font-bold text-white truncate">Administrador</p>
-                    <p className="text-xs text-slate-500 truncate">admin@climario.com</p>
-                 </div>
-              </div>
-              <button onClick={() => signOut(auth)} className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-xs font-medium text-red-400 hover:bg-red-950/20 hover:text-red-300 transition-colors border border-transparent hover:border-red-900/30">
-                 <LogOut className="w-4 h-4" /> Encerrar Sessão
-              </button>
-           </div>
-        </aside>
-
-        {/* Main Content Area */}
-        <main className="flex-1 ml-64 p-8 overflow-y-auto min-h-screen">
-           <div className="max-w-[1600px] mx-auto">
-              {currentView === 'dashboard' && <BIDashboard user={user} />}
-              {currentView === 'schedule' && <DeliverySchedule />}
-              {currentView === 'purchases' && <PurchaseManager user={user} />}
-           </div>
-        </main>
+        <aside className="w-64 bg-slate-900 text-slate-300 flex-shrink-0 flex flex-col h-screen fixed left-0 top-0 border-r border-slate-800 z-50"><div className="h-16 flex items-center px-6 border-b border-slate-800 bg-slate-950"><Activity className="w-5 h-5 text-blue-500 mr-2" /><span className="font-bold text-lg text-white tracking-tight">Climario<span className="text-slate-500">ERP</span></span></div><nav className="flex-1 p-4 space-y-1 overflow-y-auto"><div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-3 mb-2 mt-2">Gestão</div><button onClick={() => setCurrentView('dashboard')} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors ${currentView === 'dashboard' ? 'bg-blue-900/40 text-blue-400 border border-blue-900/50' : 'hover:bg-slate-800 hover:text-white'}`}><LayoutGrid className="w-4 h-4" /> Dashboard</button><button onClick={() => setCurrentView('schedule')} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors ${currentView === 'schedule' ? 'bg-blue-900/40 text-blue-400 border border-blue-900/50' : 'hover:bg-slate-800 hover:text-white'}`}><CalendarCheck className="w-4 h-4" /> Calendário</button><button onClick={() => setCurrentView('purchases')} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors ${currentView === 'purchases' ? 'bg-blue-900/40 text-blue-400 border border-blue-900/50' : 'hover:bg-slate-800 hover:text-white'}`}><List className="w-4 h-4" /> Pedidos de Compra</button></nav><div className="p-4 border-t border-slate-800 bg-slate-950"><div className="flex items-center gap-3 mb-4 px-1"><div className="w-8 h-8 rounded bg-slate-800 flex items-center justify-center font-bold text-xs text-white">AD</div><div className="overflow-hidden"><p className="text-sm font-bold text-white truncate">Administrador</p><p className="text-xs text-slate-500 truncate">admin@climario.com</p></div></div><button onClick={() => signOut(auth)} className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-xs font-medium text-red-400 hover:bg-red-950/20 hover:text-red-300 transition-colors border border-transparent hover:border-red-900/30"><LogOut className="w-4 h-4" /> Encerrar Sessão</button></div></aside>
+        <main className="flex-1 ml-64 p-8 overflow-y-auto min-h-screen"><div className="max-w-[1600px] mx-auto">{currentView === 'dashboard' && <BIDashboard user={user} />}{currentView === 'schedule' && <DeliverySchedule />}{currentView === 'purchases' && <PurchaseManager user={user} />}</div></main>
       </div>
     </ToastProvider>
   );
