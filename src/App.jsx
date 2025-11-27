@@ -1,15 +1,17 @@
 /**
- * GESTOR MULTISPLIT ENTERPRISE v6.14 (GLOBAL CALENDAR SEARCH)
+ * GESTOR MULTISPLIT ENTERPRISE v6.17 (STRICT INVOICE MATCHING)
  * ==================================================================================
- * Atualizações v6.14:
- * 1. BUSCA GLOBAL NO CALENDÁRIO:
- * - O campo de busca agora varre TODAS as entregas futuras, não só o mês atual.
- * - Se encontrar o SKU em outro mês (ex: Dezembro), o calendário SALTA automaticamente
- * para a data da entrega, permitindo visualizar o evento imediatamente.
- * 2. ORDENAÇÃO:
- * - Dados de trânsito ordenados cronologicamente para encontrar a entrega mais próxima.
- * 3. MANUTENÇÃO:
- * - Todas as funcionalidades anteriores (NF Toggle, Edição, Relatórios) mantidas.
+ * Atualizações v6.17:
+ * 1. PROTEÇÃO DE DUPLICIDADE REFORÇADA:
+ * - Normalização agressiva da Chave NF (String, Trim) para garantir que notas 
+ * já lançadas não sejam processadas novamente (Idempotência total).
+ * 2. LÓGICA DE QUANTIDADE (COLUNA AH):
+ * - O sistema respeita estritamente a quantidade da planilha.
+ * - Se a nota tem 5 e o pedido pede 10, fatura 5. Não completa o resto.
+ * 3. FEEDBACK DETALHADO:
+ * - Toast final informa quantos itens foram ignorados por duplicidade vs processados.
+ * 4. MATCHING:
+ * - Mantido cruzamento estrito: Cód. Produto da Nota (X) == Ref. Fábrica do Pedido.
  * ==================================================================================
  */
 
@@ -264,7 +266,7 @@ const LoginModule = () => {
   );
 };
 
-// --- 4.2: AGENDA (BUSCA GLOBAL + SALTO NO TEMPO) ---
+// --- 4.2: AGENDA (FILTRO RIGOROSO + BUSCA) ---
 const DeliverySchedule = () => {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [transitData, setTransitData] = useState([]);
@@ -367,14 +369,12 @@ const DeliverySchedule = () => {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
         {daysInMonth.map((day) => {
-          // Filtro visual do dia (mantém apenas o que bate com a busca se houver)
           const dayEvents = day.events.filter(ev => 
              !searchTerm || 
              ev.sku.toLowerCase().includes(searchTerm.toLowerCase()) || 
              ev.desc.toLowerCase().includes(searchTerm.toLowerCase())
           );
 
-          // Se tem busca e o dia não tem nada relevante, esconde (foco no resultado)
           if (searchTerm && dayEvents.length === 0) return null;
 
           return (
@@ -413,6 +413,7 @@ const BIDashboard = ({ user }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [stockFilter, setStockFilter] = useState('ALL');
   const [hideZeroSales, setHideZeroSales] = useState(false);
+
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportConfig, setExportConfig] = useState({ filename: 'relatorio_vendas', includeZero: false });
 
@@ -596,7 +597,7 @@ const BIDashboard = ({ user }) => {
     const total25 = brandKPI ? brandKPI.val : 0;
     const growth = total24 > 0 ? ((total25 - total24) / total24) : 0;
 
-    return { items: filtered, conds: filtered.filter(r => r.type === 'Condensadora'), evaps: filtered.filter(r => r.type === 'Evaporadora'), others: filtered.filter(r => r.type === 'Outros'), total: total25, stock: items.reduce((a,b)=>a+b.stock,0), recentSales, bestSellers, growth };
+    return { items: filtered, conds: filtered.filter(r => r.type === 'Condensadora'), evaps: filtered.filter(r => r.type === 'Evaporadora'), others: filtered.filter(r => r.type === 'Outros'), total: total25, total24: total24, stock: items.reduce((a,b)=>a+b.stock,0), recentSales, bestSellers, growth };
   }, [enrichedData, viewBrand, searchTerm, stockFilter, hideZeroSales, kpis, timeContext]);
 
   const handleExportReport = () => {
@@ -629,7 +630,16 @@ const BIDashboard = ({ user }) => {
                 </div>
              </div>
              <div className="flex gap-6 items-center">
-               <div className="text-right border-r border-slate-200 pr-6 hidden md:block"><span className="block text-[10px] font-bold text-slate-400 uppercase">Total 2025</span><span className="block text-lg font-bold text-slate-800">{Formatters.number(viewData.total)}</span></div>
+               {/* NOVO BLOCO TOTAL 2024 */}
+               <div className="text-right border-r border-slate-200 pr-6 hidden md:block">
+                 <span className="block text-[10px] font-bold text-slate-400 uppercase">Total 2024</span>
+                 <span className="block text-lg font-bold text-slate-500">{Formatters.number(viewData.total24)}</span>
+               </div>
+
+               <div className="text-right border-r border-slate-200 pr-6 hidden md:block">
+                 <span className="block text-[10px] font-bold text-slate-400 uppercase">Total 2025</span>
+                 <span className="block text-lg font-bold text-slate-800">{Formatters.number(viewData.total)}</span>
+               </div>
                <div className="text-right hidden md:block border-r border-slate-200 pr-6"><span className="block text-[10px] font-bold text-slate-400 uppercase">Estoque Físico</span><span className="block text-lg font-bold text-slate-800">{Formatters.number(viewData.stock)}</span></div>
                <Button variant="primary" size="sm" icon={FileDown} onClick={() => setExportModalOpen(true)} className="shadow-md">Exportar Relatório</Button>
              </div>
@@ -774,6 +784,7 @@ const PurchaseManager = ({ user }) => {
     reader.readAsBinaryString(file);
   };
 
+  // --- Processar Relatório de Faturamento (NF) - CORRIGIDO PARA EVITAR DUPLICIDADE ---
   const processInvoiceUpload = (e) => {
     const file = e.target.files[0]; if(!file) return;
     const reader = new FileReader();
@@ -783,6 +794,8 @@ const PurchaseManager = ({ user }) => {
         const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
         let itemsInvoiced = 0;
         let ordersUpdated = 0;
+        let duplicatedSkipped = 0;
+
         const ordersRef = collection(db, 'artifacts', appId, 'users', user.uid, 'multisplit_orders');
         const snapshot = await getDocs(ordersRef);
         const targetOrders = snapshot.docs.filter(d => {
@@ -798,27 +811,43 @@ const PurchaseManager = ({ user }) => {
         json.forEach(row => {
            const factoryCode = normalizeSKU(findColumnValue(row, ['COD PRODUTO', 'Código Produto', 'SKU'])); 
            const qty = parseInt(findColumnValue(row, ['QUANTIDADE COMERCIAL', 'Qtd', 'Quantidade'])) || 0;
-           const nfKey = String(findColumnValue(row, ['CHAVE NFE', 'Chave de Acesso']) || '');
+           const nfKey = String(findColumnValue(row, ['CHAVE NFE', 'Chave de Acesso']) || '').trim();
            const nfNum = String(findColumnValue(row, ['NUM NFE', 'Numero NF', 'NF']) || '');
            const cost = Formatters.parseMoney(findColumnValue(row, ['VALOR UNITÁRIO', 'Valor Unitario', 'Vlr Unit']));
-           if (factoryCode && qty > 0) {
+           if (factoryCode && qty > 0 && nfKey) {
               if (!invoiceMap[factoryCode]) invoiceMap[factoryCode] = [];
               invoiceMap[factoryCode].push({ qty, nfKey, nfNum, cost });
            }
         });
+        
+        // Processamento
         for (const docSnapshot of targetOrders) {
            const orderData = docSnapshot.data();
            let orderChanged = false;
            let newItems = [...orderData.items];
+           
            newItems = newItems.map(item => {
               const orderFactoryRef = normalizeSKU(item.factory);
               const invoices = invoiceMap[orderFactoryRef];
+              
               if (invoices && invoices.length > 0) {
                  let pending = item.qty - (item.invoiced || 0);
-                 if (pending > 0) {
-                    while (pending > 0 && invoices.length > 0) {
-                       const currentInvoice = invoices[0];
+                 
+                 // Filtrar apenas notas não usadas neste item específico
+                 const usableInvoices = invoices.filter(inv => {
+                    const alreadyUsed = item.history && item.history.some(h => String(h.nfKey).trim() === String(inv.nfKey).trim());
+                    if(alreadyUsed) duplicatedSkipped++;
+                    return !alreadyUsed; 
+                 });
+
+                 if (pending > 0 && usableInvoices.length > 0) {
+                    // Consumir
+                    usableInvoices.forEach(currentInvoice => {
+                       if (pending <= 0) return;
+                       
+                       // Faturar APENAS a quantidade da nota (limitado pelo pendente do pedido)
                        const toTake = Math.min(pending, currentInvoice.qty);
+                       
                        item.history = [...(item.history || []), {
                           type: 'Faturado (NF)',
                           qty: toTake,
@@ -829,17 +858,15 @@ const PurchaseManager = ({ user }) => {
                        }];
                        item.invoiced = (item.invoiced || 0) + toTake;
                        pending -= toTake;
-                       currentInvoice.qty -= toTake;
-                       if (currentInvoice.qty <= 0) {
-                          invoices.shift();
-                       }
+                       
                        orderChanged = true;
                        itemsInvoiced++;
-                    }
+                    });
                  }
               }
               return item;
            });
+           
            if (orderChanged) {
               ordersUpdated++;
               const totalQty = newItems.reduce((acc, i) => acc + i.qty, 0);
@@ -848,8 +875,11 @@ const PurchaseManager = ({ user }) => {
               await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'multisplit_orders', docSnapshot.id), { items: newItems, status: newStatus });
            }
         }
+        
         if (itemsInvoiced > 0) {
-            addToast(`Sucesso! ${itemsInvoiced} itens baixados em ${ordersUpdated} pedidos.`, 'success');
+            addToast(`Sucesso! ${itemsInvoiced} itens baixados. Ignorados (Duplicados): ${duplicatedSkipped}.`, 'success');
+        } else if (duplicatedSkipped > 0) {
+            addToast(`Nenhuma novidade. ${duplicatedSkipped} itens já haviam sido processados anteriormente.`, 'info');
         } else {
             addToast('Nenhum item correspondente encontrado para baixa.', 'info');
         }
