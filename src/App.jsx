@@ -1,17 +1,17 @@
 /**
- * GESTOR MULTISPLIT ENTERPRISE v6.17 (STRICT INVOICE MATCHING)
+ * GESTOR MULTISPLIT ENTERPRISE v6.18 (SALES BREAKDOWN & EXPORT FILTER)
  * ==================================================================================
- * Atualizações v6.17:
- * 1. PROTEÇÃO DE DUPLICIDADE REFORÇADA:
- * - Normalização agressiva da Chave NF (String, Trim) para garantir que notas 
- * já lançadas não sejam processadas novamente (Idempotência total).
- * 2. LÓGICA DE QUANTIDADE (COLUNA AH):
- * - O sistema respeita estritamente a quantidade da planilha.
- * - Se a nota tem 5 e o pedido pede 10, fatura 5. Não completa o resto.
- * 3. FEEDBACK DETALHADO:
- * - Toast final informa quantos itens foram ignorados por duplicidade vs processados.
- * 4. MATCHING:
- * - Mantido cruzamento estrito: Cód. Produto da Nota (X) == Ref. Fábrica do Pedido.
+ * Atualizações v6.18:
+ * 1. DETALHAMENTO DE VENDAS (Cards de Meses):
+ * - Adicionado breakdown de 'Condensadoras' (COND) e 'Evaporadoras' (EVAP) 
+ * dentro dos cards de Vendas dos Últimos 3 Meses.
+ * - Permite visualizar o mix de venda mensal diretamente no dashboard.
+ * 2. FILTRO DE EXPORTAÇÃO:
+ * - Novo seletor no modal de relatório: "Tipo de Produto".
+ * - Opções: Todos, Apenas Condensadoras, Apenas Evaporadoras.
+ * - O Excel gerado reflete exatamente a seleção.
+ * 3. MANUTENÇÃO:
+ * - Lógica de calendário global e proteção de duplicidade mantidas.
  * ==================================================================================
  */
 
@@ -415,7 +415,8 @@ const BIDashboard = ({ user }) => {
   const [hideZeroSales, setHideZeroSales] = useState(false);
 
   const [exportModalOpen, setExportModalOpen] = useState(false);
-  const [exportConfig, setExportConfig] = useState({ filename: 'relatorio_vendas', includeZero: false });
+  // Configuração de Exportação Atualizada com Tipo
+  const [exportConfig, setExportConfig] = useState({ filename: 'relatorio_vendas', includeZero: false, type: 'ALL' });
 
   const matrixFileRef = useRef(null);
   const transitFileRef = useRef(null);
@@ -586,29 +587,69 @@ const BIDashboard = ({ user }) => {
     if (stockFilter === 'LOW') items = items.filter(r => r.daysOfStock < 15);
     if (stockFilter === 'CRITICAL') items = items.filter(r => r.daysOfStock < 7);
     if (stockFilter === 'EXCESS') items = items.filter(r => r.daysOfStock > 120);
+
     const filtered = items.filter(r => {
        const term = searchTerm.toUpperCase();
        return !term || String(r.code).includes(term) || r.desc.includes(term) || r.factory.includes(term);
     });
-    const recentSales = timeContext.last3Months.map(m => ({ month: m.short.toUpperCase(), val: items.reduce((a,b) => a + (b[m.short] || 0), 0) }));
+    
+    // --- LÓGICA DE BREAKDOWN DE VENDAS (COND/EVAP) ---
+    const recentSales = timeContext.last3Months.map(m => {
+      const monthItems = items.filter(i => (i[m.short] || 0) > 0);
+      const totalVal = monthItems.reduce((a,b) => a + (b[m.short] || 0), 0);
+      const condVal = monthItems.filter(i => i.type === 'Condensadora').reduce((a,b) => a + (b[m.short] || 0), 0);
+      const evapVal = monthItems.filter(i => i.type === 'Evaporadora').reduce((a,b) => a + (b[m.short] || 0), 0);
+      return { month: m.short.toUpperCase(), val: totalVal, conds: condVal, evaps: evapVal };
+    });
+
     const bestSellers = [...items].sort((a,b) => b.sales25 - a.sales25).slice(0, 5);
     const brandKPI = kpis.brands.find(b => b.name === viewBrand);
     const total24 = brandKPI ? brandKPI.val24 : 0;
     const total25 = brandKPI ? brandKPI.val : 0;
     const growth = total24 > 0 ? ((total25 - total24) / total24) : 0;
 
-    return { items: filtered, conds: filtered.filter(r => r.type === 'Condensadora'), evaps: filtered.filter(r => r.type === 'Evaporadora'), others: filtered.filter(r => r.type === 'Outros'), total: total25, total24: total24, stock: items.reduce((a,b)=>a+b.stock,0), recentSales, bestSellers, growth };
+    return {
+       items: filtered,
+       conds: filtered.filter(r => r.type === 'Condensadora'),
+       evaps: filtered.filter(r => r.type === 'Evaporadora'),
+       others: filtered.filter(r => r.type === 'Outros'),
+       total: total25,
+       total24: total24,
+       stock: items.reduce((a,b)=>a+b.stock,0),
+       recentSales,
+       bestSellers,
+       growth
+    };
   }, [enrichedData, viewBrand, searchTerm, stockFilter, hideZeroSales, kpis, timeContext]);
 
   const handleExportReport = () => {
     if (!viewBrand) return;
     let itemsToExport = enrichedData.filter(r => r.brand === viewBrand);
     if (!exportConfig.includeZero) itemsToExport = itemsToExport.filter(r => r.sales25 > 0);
-    const excelData = itemsToExport.map(item => ({ 'SKU': item.code, 'Descrição': item.desc, 'Cód. Fabricante': item.factory, 'Vendas 2024': item.sales24 || 0, 'Vendas 2025': item.sales25 || 0, [`Vendas ${timeContext.last3Months[0].label}`]: item[timeContext.last3Months[0].short] || 0, [`Vendas ${timeContext.last3Months[1].label}`]: item[timeContext.last3Months[1].short] || 0, [`Vendas ${timeContext.last3Months[2].label}`]: item[timeContext.last3Months[2].short] || 0, 'Estoque Físico': item.stock || 0, 'Trânsito': item.transitQty || 0, 'Dias de Estoque': item.daysOfStock > 900 ? 'Sem Venda' : item.daysOfStock }));
+    
+    // --- FILTRAGEM POR TIPO (Export Filter) ---
+    if (exportConfig.type === 'COND') itemsToExport = itemsToExport.filter(r => r.type === 'Condensadora');
+    if (exportConfig.type === 'EVAP') itemsToExport = itemsToExport.filter(r => r.type === 'Evaporadora');
+
+    const excelData = itemsToExport.map(item => ({
+       'SKU': item.code,
+       'Descrição': item.desc,
+       'Tipo': item.type,
+       'Cód. Fabricante': item.factory,
+       'Vendas 2024': item.sales24 || 0,
+       'Vendas 2025': item.sales25 || 0,
+       [`Vendas ${timeContext.last3Months[0].label}`]: item[timeContext.last3Months[0].short] || 0,
+       [`Vendas ${timeContext.last3Months[1].label}`]: item[timeContext.last3Months[1].short] || 0,
+       [`Vendas ${timeContext.last3Months[2].label}`]: item[timeContext.last3Months[2].short] || 0,
+       'Estoque Físico': item.stock || 0,
+       'Trânsito': item.transitQty || 0,
+       'Dias de Estoque': item.daysOfStock > 900 ? 'Sem Venda' : item.daysOfStock
+    }));
+
     const ws = window.XLSX.utils.json_to_sheet(excelData);
     const wb = window.XLSX.utils.book_new();
     window.XLSX.utils.book_append_sheet(wb, ws, "Relatório");
-    window.XLSX.writeFile(wb, `${exportConfig.filename || 'Relatorio'}_${viewBrand}_${timeContext.currentMonth.short}.xlsx`);
+    window.XLSX.writeFile(wb, `${exportConfig.filename || 'Relatorio'}_${viewBrand}_${exportConfig.type}.xlsx`);
     setExportModalOpen(false);
     addToast('Relatório gerado com sucesso!', 'success');
   };
@@ -630,7 +671,6 @@ const BIDashboard = ({ user }) => {
                 </div>
              </div>
              <div className="flex gap-6 items-center">
-               {/* NOVO BLOCO TOTAL 2024 */}
                <div className="text-right border-r border-slate-200 pr-6 hidden md:block">
                  <span className="block text-[10px] font-bold text-slate-400 uppercase">Total 2024</span>
                  <span className="block text-lg font-bold text-slate-500">{Formatters.number(viewData.total24)}</span>
@@ -646,7 +686,31 @@ const BIDashboard = ({ user }) => {
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-             <Card className="lg:col-span-2 p-5 flex flex-col"><h3 className="font-bold text-sm text-slate-800 mb-4 flex items-center gap-2"><CalendarIcon className="w-4 h-4 text-slate-400"/> Vendas Últimos 3 Meses</h3><div className="grid grid-cols-3 gap-4 flex-1">{viewData.recentSales.map(s => (<div key={s.month} className="bg-slate-50 rounded border border-slate-100 p-4 text-center flex flex-col justify-center"><span className="text-xs font-bold text-slate-400 uppercase mb-1">{s.month}</span><span className="text-xl font-bold text-blue-700">{Formatters.number(s.val)}</span></div>))}</div></Card>
+             <Card className="lg:col-span-2 p-5 flex flex-col">
+                <h3 className="font-bold text-sm text-slate-800 mb-4 flex items-center gap-2"><CalendarIcon className="w-4 h-4 text-slate-400"/> Vendas Últimos 3 Meses</h3>
+                <div className="grid grid-cols-3 gap-4 flex-1">
+                   {viewData.recentSales.map(s => (
+                      <div key={s.month} className="bg-slate-50 rounded border border-slate-100 p-4 text-center flex flex-col justify-between">
+                         <div>
+                            <span className="text-xs font-bold text-slate-400 uppercase mb-1 block">{s.month}</span>
+                            <span className="text-xl font-bold text-blue-800 block mb-2">{Formatters.number(s.val)}</span>
+                         </div>
+                         {/* --- BREAKDOWN COND/EVAP --- */}
+                         <div className="flex justify-between items-center text-[10px] border-t border-slate-200 pt-2 w-full">
+                            <div className="flex flex-col items-center w-1/2 border-r border-slate-100">
+                               <span className="text-slate-400 font-bold">COND</span>
+                               <span className="text-blue-600 font-bold">{Formatters.number(s.conds)}</span>
+                            </div>
+                            <div className="flex flex-col items-center w-1/2">
+                               <span className="text-slate-400 font-bold">EVAP</span>
+                               <span className="text-sky-600 font-bold">{Formatters.number(s.evaps)}</span>
+                            </div>
+                         </div>
+                      </div>
+                   ))}
+                </div>
+             </Card>
+
              <Card className="p-5 flex flex-col"><h3 className="font-bold text-sm text-slate-800 mb-3 flex items-center gap-2"><Trophy className="w-4 h-4 text-amber-500"/> Top 5 Produtos</h3><div className="flex-1 overflow-y-auto custom-scrollbar"><div className="space-y-2">{viewData.bestSellers.map((p, i) => (<div key={i} className="flex justify-between items-center text-xs border-b border-slate-50 last:border-0 pb-2 last:pb-0"><div className="flex items-center gap-2 overflow-hidden"><span className="font-bold text-slate-400 w-3">{i+1}.</span><span className="truncate font-medium text-slate-700" title={p.desc}>{p.desc.substring(0, 25)}...</span></div><span className="font-bold text-slate-900">{Formatters.number(p.sales25)}</span></div>))}</div></div></Card>
           </div>
 
@@ -659,7 +723,29 @@ const BIDashboard = ({ user }) => {
           </Card>
 
           <Modal isOpen={exportModalOpen} onClose={() => setExportModalOpen(false)} title="Exportar Relatório Executivo" size="sm" actions={<><Button variant="secondary" onClick={() => setExportModalOpen(false)}>Cancelar</Button><Button onClick={handleExportReport} icon={Download}>Gerar Excel</Button></>}>
-             <div className="space-y-4"><div className="bg-slate-50 p-4 rounded border border-slate-200"><p className="text-xs font-bold text-slate-500 uppercase mb-1">Marca Selecionada</p><p className="text-lg font-bold text-slate-800">{viewBrand}</p></div><InputField label="Nome do Arquivo" value={exportConfig.filename} onChange={e => setExportConfig({...exportConfig, filename: e.target.value})} placeholder="Ex: relatorio_samsung_nov" /><div className="flex items-center gap-2 mt-2"><input type="checkbox" id="includeZero" checked={exportConfig.includeZero} onChange={e => setExportConfig({...exportConfig, includeZero: e.target.checked})} className="rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer" /><label htmlFor="includeZero" className="text-sm text-slate-700 cursor-pointer font-medium">Incluir produtos sem vendas (Venda 2025 = 0)</label></div><p className="text-xs text-slate-400 italic mt-2">O relatório incluirá: SKU, Descrição, Ref., Vendas (2024, 2025, Trimestre), Estoque, Trânsito e Dias de Cobertura.</p></div>
+             <div className="space-y-4">
+                <div className="bg-slate-50 p-4 rounded border border-slate-200">
+                   <p className="text-xs font-bold text-slate-500 uppercase mb-1">Marca Selecionada</p>
+                   <p className="text-lg font-bold text-slate-800">{viewBrand}</p>
+                </div>
+                <InputField label="Nome do Arquivo" value={exportConfig.filename} onChange={e => setExportConfig({...exportConfig, filename: e.target.value})} placeholder="Ex: relatorio_samsung_nov" />
+                
+                {/* Novo Filtro de Tipo de Produto */}
+                <div className="space-y-1">
+                   <label className="block text-xs font-bold text-slate-700">Tipo de Produto</label>
+                   <select className="w-full bg-white border border-slate-300 rounded-md py-2 px-3 text-sm outline-none focus:ring-2 focus:ring-blue-600" value={exportConfig.type} onChange={e => setExportConfig({...exportConfig, type: e.target.value})}>
+                      <option value="ALL">Todos os Produtos</option>
+                      <option value="COND">Apenas Condensadoras</option>
+                      <option value="EVAP">Apenas Evaporadoras</option>
+                   </select>
+                </div>
+
+                <div className="flex items-center gap-2 mt-2">
+                   <input type="checkbox" id="includeZero" checked={exportConfig.includeZero} onChange={e => setExportConfig({...exportConfig, includeZero: e.target.checked})} className="rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer" />
+                   <label htmlFor="includeZero" className="text-sm text-slate-700 cursor-pointer font-medium">Incluir produtos sem vendas (Venda 2025 = 0)</label>
+                </div>
+                <p className="text-xs text-slate-400 italic mt-2">O relatório incluirá: SKU, Descrição, Ref., Vendas (2024, 2025, Trimestre), Estoque, Trânsito e Dias de Cobertura.</p>
+             </div>
           </Modal>
         </div>
       );
