@@ -1,13 +1,14 @@
 /**
- * GESTOR MULTISPLIT ENTERPRISE v6.20 (ORDER ITEM SEARCH)
+ * GESTOR MULTISPLIT ENTERPRISE v6.21 (DYNAMIC STOCK COVERAGE CALC)
  * ==================================================================================
- * Atualizações v6.20:
- * 1. BUSCA DE ITENS NO PEDIDO:
- * - Adicionado campo de pesquisa dentro do detalhe do pedido (expandido).
- * - Permite filtrar a lista de itens por SKU ou Cód. Fábrica (Ref).
- * - Facilita encontrar itens específicos em pedidos grandes para faturar/editar.
+ * Atualizações v6.21:
+ * 1. CÁLCULO DE COBERTURA DE ESTOQUE (Ajuste Fino):
+ * - Lógica: (Estoque + Trânsito) / Média Venda Diária.
+ * - Média Venda Diária: (Venda Mês Anterior + Venda Mês Atual) / Dias Decorridos.
+ * - Dias Decorridos: Dias totais do mês anterior + Dia atual do mês corrente.
+ * - Exemplo (1º Dez): (Venda Nov + Venda Dez) / (30 + 1).
  * 2. MANUTENÇÃO:
- * - Toda a lógica de banco de dados compartilhado e reconciliação de NF mantida.
+ * - Mantidas todas as funcionalidades anteriores (Reconciliação NF, Edição, Relatórios).
  * ==================================================================================
  */
 
@@ -559,15 +560,30 @@ const BIDashboard = ({ user }) => {
     return data.map(item => {
        const transitInfo = transitData[normalizeSKU(item.code)] || { qty: 0, date: null };
        const transitDate = transitInfo.date ? new Date(transitInfo.date + 'T12:00:00') : null; 
+       
+       // DADOS DINÂMICOS
        const currentMonthSales = item[timeContext.currentMonth.short] || 0;
        const previousMonthSales = item[timeContext.prevMonth.short] || 0; 
+
+       // CÁLCULO DE DIAS DECORRIDOS EXATO (v6.21)
+       const today = new Date();
+       // Pega o número total de dias do mês anterior (dia 0 do mês atual retorna o último do anterior)
+       const daysInPrevMonth = new Date(today.getFullYear(), today.getMonth(), 0).getDate();
+       const daysInCurrentMonth = today.getDate(); // Dia de hoje
+       const totalDaysElapsed = daysInPrevMonth + daysInCurrentMonth;
+
        const salesLast2Months = currentMonthSales + previousMonthSales;
-       const daysElapsed = 61; 
-       const dailyAvgSales = salesLast2Months / daysElapsed;
+       
+       // Evita divisão por zero se o sistema for iniciado em um dia impossível (segurança)
+       const validDays = totalDaysElapsed > 0 ? totalDaysElapsed : 1;
+       const dailyAvgSales = salesLast2Months / validDays;
+
        const totalAvail = (item.stock || 0) + transitInfo.qty;
+       
        let daysOfStock = 0;
        if (dailyAvgSales > 0) daysOfStock = Math.ceil(totalAvail / dailyAvgSales); 
        else if (totalAvail > 0) daysOfStock = 999;
+       
        return { ...item, transitQty: transitInfo.qty, transitDate, currentMonthSales, previousMonthSales, daysOfStock };
     });
   }, [data, transitData, timeContext]);
@@ -638,7 +654,6 @@ const BIDashboard = ({ user }) => {
     let itemsToExport = enrichedData.filter(r => r.brand === viewBrand);
     if (!exportConfig.includeZero) itemsToExport = itemsToExport.filter(r => r.sales25 > 0);
     
-    // --- FILTRAGEM POR TIPO (Export Filter) ---
     if (exportConfig.type === 'COND') itemsToExport = itemsToExport.filter(r => r.type === 'Condensadora');
     if (exportConfig.type === 'EVAP') itemsToExport = itemsToExport.filter(r => r.type === 'Evaporadora');
 
@@ -677,9 +692,7 @@ const BIDashboard = ({ user }) => {
                    <h2 className="text-xl font-bold text-slate-900">{viewBrand}</h2>
                    <div className="flex items-center gap-2 mt-0.5">
                       <span className="text-xs text-slate-500 font-medium uppercase">Crescimento YoY</span>
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${viewData.growth >= 0 ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
-                         {viewData.growth > 0 ? '+' : ''}{Formatters.percent(viewData.growth)}
-                      </span>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${viewData.growth >= 0 ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'}`}>{viewData.growth > 0 ? '+' : ''}{Formatters.percent(viewData.growth)}</span>
                    </div>
                 </div>
              </div>
@@ -688,6 +701,7 @@ const BIDashboard = ({ user }) => {
                  <span className="block text-[10px] font-bold text-slate-400 uppercase">Total 2024</span>
                  <span className="block text-lg font-bold text-slate-500">{Formatters.number(viewData.total24)}</span>
                </div>
+
                <div className="text-right border-r border-slate-200 pr-6 hidden md:block">
                  <span className="block text-[10px] font-bold text-slate-400 uppercase">Total 2025</span>
                  <span className="block text-lg font-bold text-slate-800">{Formatters.number(viewData.total)}</span>
@@ -758,13 +772,9 @@ const PurchaseManager = ({ user }) => {
   const [brandFilter, setBrandFilter] = useState('ALL');
   const [editingId, setEditingId] = useState(null); 
   
-  // Estado para Edição de Item em Linha
   const [editingItemIdx, setEditingItemIdx] = useState(null);
   const [tempItem, setTempItem] = useState(null); 
   const [expandedNF, setExpandedNF] = useState(new Set()); 
-
-  // ESTADO PARA BUSCA DE ITEM DENTRO DO PEDIDO
-  const [itemSearchTerm, setItemSearchTerm] = useState('');
 
   const [invoiceModalOpen, setInvoiceModalOpen] = useState(false);
   const [invoiceBrand, setInvoiceBrand] = useState('SAMSUNG');
@@ -773,6 +783,8 @@ const PurchaseManager = ({ user }) => {
 
   const [actionModal, setActionModal] = useState({ open: false, type: null, item: null, order: null });
   const [actionForm, setActionForm] = useState({ qty: '', date: new Date().toISOString().split('T')[0] });
+
+  const [itemSearchTerm, setItemSearchTerm] = useState('');
 
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'multisplit_orders'), 
@@ -863,6 +875,7 @@ const PurchaseManager = ({ user }) => {
     reader.readAsBinaryString(file);
   };
 
+  // --- Processar Relatório de Faturamento (NF) - CORRIGIDO PARA EVITAR DUPLICIDADE ---
   const processInvoiceUpload = (e) => {
     const file = e.target.files[0]; if(!file) return;
     const reader = new FileReader();
@@ -898,6 +911,7 @@ const PurchaseManager = ({ user }) => {
            }
         });
         
+        // Processamento
         for (const docSnapshot of targetOrders) {
            const orderData = docSnapshot.data();
            let orderChanged = false;
@@ -910,6 +924,7 @@ const PurchaseManager = ({ user }) => {
               if (invoices && invoices.length > 0) {
                  let pending = item.qty - (item.invoiced || 0);
                  
+                 // Filtrar apenas notas não usadas neste item específico
                  const usableInvoices = invoices.filter(inv => {
                     const alreadyUsed = item.history && item.history.some(h => String(h.nfKey).trim() === String(inv.nfKey).trim());
                     if(alreadyUsed) duplicatedSkipped++;
@@ -917,9 +932,11 @@ const PurchaseManager = ({ user }) => {
                  });
 
                  if (pending > 0 && usableInvoices.length > 0) {
+                    // Consumir
                     usableInvoices.forEach(currentInvoice => {
                        if (pending <= 0) return;
                        
+                       // Faturar APENAS a quantidade da nota (limitado pelo pendente do pedido)
                        const toTake = Math.min(pending, currentInvoice.qty);
                        
                        item.history = [...(item.history || []), {
@@ -952,6 +969,8 @@ const PurchaseManager = ({ user }) => {
         
         if (itemsInvoiced > 0) {
             addToast(`Sucesso! ${itemsInvoiced} itens baixados em ${ordersUpdated} pedidos.`, 'success');
+        } else if (duplicatedSkipped > 0) {
+            addToast(`Nenhuma novidade. ${duplicatedSkipped} itens já haviam sido processados anteriormente.`, 'info');
         } else {
             addToast('Nenhum item correspondente encontrado para baixa.', 'info');
         }
