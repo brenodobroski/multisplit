@@ -1,16 +1,15 @@
 /**
- * GESTOR MULTISPLIT ENTERPRISE v6.22 (SMART STOCK DAYS LOGIC)
+ * GESTOR MULTISPLIT ENTERPRISE v6.23 (STOCK ALERT THRESHOLDS UPDATE)
  * ==================================================================================
- * Atualizações v6.22:
- * 1. CÁLCULO DE DIAS DE ESTOQUE HÍBRIDO (Smart Calculation):
- * - Até o dia 10 do mês: Usa (Vendas Mês Anterior + Vendas 2 Meses Atrás) / Dias Totais desses meses.
- * -> Evita distorção de "início de mês" onde a venda atual é baixa.
- * - A partir do dia 11: Usa (Vendas Mês Atual + Vendas Mês Anterior) / Dias Corridos.
- * 2. VISUALIZAÇÃO:
- * - Adicionada coluna "Venda [2 Meses Atrás]" na tabela do fornecedor.
- * - Agora temos a visão completa: 2 Meses Atrás | Mês Anterior | Mês Atual.
+ * Atualizações v6.23:
+ * 1. LIMITES DE ESTOQUE (Thresholds Update):
+ * - Crítico: Ajustado para < 30 dias (Antes < 7d).
+ * - Excesso: Ajustado para > 150 dias (Antes > 120d).
+ * - Saudável: Entre 30 e 150 dias.
+ * 2. FILTROS:
+ * - Atualizadas as opções do select "Status de Estoque" para refletir os novos dias.
  * 3. MANUTENÇÃO:
- * - Lógicas de NF, Edição e Exportação mantidas e integradas ao novo cálculo.
+ * - Mantidas todas as funcionalidades anteriores (Cálculo Híbrido, NF, etc).
  * ==================================================================================
  */
 
@@ -644,8 +643,8 @@ const BIDashboard = ({ user }) => {
     let items = enrichedData.filter(r => r.brand === viewBrand);
     if (hideZeroSales) items = items.filter(r => r.sales25 > 0);
     if (stockFilter === 'LOW') items = items.filter(r => r.daysOfStock < 15);
-    if (stockFilter === 'CRITICAL') items = items.filter(r => r.daysOfStock < 7);
-    if (stockFilter === 'EXCESS') items = items.filter(r => r.daysOfStock > 120);
+    if (stockFilter === 'CRITICAL') items = items.filter(r => r.daysOfStock < 7 || r.daysOfStock < 30); // Ajustado para < 30
+    if (stockFilter === 'EXCESS') items = items.filter(r => r.daysOfStock > 150); // Ajustado para > 150
 
     const filtered = items.filter(r => {
        const term = searchTerm.toUpperCase();
@@ -774,12 +773,25 @@ const BIDashboard = ({ user }) => {
           <Card className="p-0 overflow-hidden">
              <div className="flex flex-col md:flex-row justify-between items-center p-4 border-b border-slate-200 bg-slate-50 gap-4">
                 <div className="flex bg-white border border-slate-300 rounded-md p-0.5">{[{id:'conds', label:'Condensadoras'},{id:'evaps', label:'Evaporadoras'},{id:'others', label:'Outros'}].map(t => (<button key={t.id} onClick={()=>setActiveTab(t.id)} className={`px-4 py-1.5 rounded-sm text-xs font-bold transition-all ${activeTab===t.id ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>{t.label}</button>))}</div>
-                <div className="flex items-center gap-3"><label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-slate-700 select-none"><input type="checkbox" checked={hideZeroSales} onChange={()=>setHideZeroSales(!hideZeroSales)} className="rounded text-blue-600 focus:ring-blue-500 border-slate-300" />Ocultar Sem Vendas</label><select value={stockFilter} onChange={e=>setStockFilter(e.target.value)} className="text-xs border border-slate-300 rounded-md px-2 py-1.5 bg-white font-medium focus:ring-1 focus:ring-blue-500 outline-none cursor-pointer"><option value="ALL">Todos Status</option><option value="CRITICAL">🚨 Crítico (&lt;7d)</option><option value="LOW">⚠️ Baixo (&lt;15d)</option><option value="EXCESS">📦 Excesso (&gt;120d)</option></select><div className="relative w-56"><SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" /><input value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} placeholder="Buscar SKU..." className="w-full pl-8 pr-3 py-1.5 border border-slate-300 rounded-md text-xs focus:ring-1 focus:ring-blue-500 outline-none" /></div></div>
+                <div className="flex items-center gap-3"><label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-slate-700 select-none"><input type="checkbox" checked={hideZeroSales} onChange={()=>setHideZeroSales(!hideZeroSales)} className="rounded text-blue-600 focus:ring-blue-500 border-slate-300" />Ocultar Sem Vendas</label><select value={stockFilter} onChange={e=>setStockFilter(e.target.value)} className="text-xs border border-slate-300 rounded-md px-2 py-1.5 bg-white font-medium focus:ring-1 focus:ring-blue-500 outline-none cursor-pointer">
+                      <option value="ALL">Todos Status</option>
+                      {/* NOVOS FILTROS DE DIAS (v6.23) */}
+                      <option value="CRITICAL">🚨 Crítico (&lt;30d)</option>
+                      <option value="LOW">⚠️ Baixo (30-60d)</option>
+                      <option value="EXCESS">📦 Excesso (&gt;150d)</option>
+                   </select><div className="relative w-56"><SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" /><input value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} placeholder="Buscar SKU..." className="w-full pl-8 pr-3 py-1.5 border border-slate-300 rounded-md text-xs focus:ring-1 focus:ring-blue-500 outline-none" /></div></div>
              </div>
              <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200"><tr><th className="px-4 py-3 w-1/3">Produto / SKU</th>
              {/* COLUNA EXTRA (2 Meses Atrás) para visão completa */}
              <th className="px-4 py-3 text-right">Venda {timeContext.twoMonthsAgo.short.toUpperCase()}</th>
-             <th className="px-4 py-3 text-right">Venda {timeContext.prevMonth.short.toUpperCase()}</th><th className="px-4 py-3 text-right">Venda {timeContext.currentMonth.short.toUpperCase()}</th><th className="px-4 py-3 text-right">Estoque</th><th className="px-4 py-3 text-center">Trânsito</th><th className="px-4 py-3 text-center">Cobertura (Dias)</th></tr></thead><tbody className="divide-y divide-slate-100 text-slate-700 font-medium">{(activeTab === 'conds' ? viewData.conds : activeTab === 'evaps' ? viewData.evaps : viewData.others).map((r, i) => { let daysClass = "text-slate-600 font-mono font-bold"; if(r.daysOfStock < 7) daysClass = "text-red-700 font-bold bg-red-50 px-2 py-0.5 rounded border border-red-100"; else if(r.daysOfStock < 15) daysClass = "text-amber-700 font-bold bg-amber-50 px-2 py-0.5 rounded border border-amber-100"; else if(r.daysOfStock > 120) daysClass = "text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-100"; return (<tr key={i} className="hover:bg-slate-50 transition-colors"><td className="px-4 py-3"><div className="flex flex-col"><span className="font-bold text-slate-800 truncate max-w-xs" title={r.desc}>{r.desc}</span><span className="text-[10px] text-slate-500 font-mono mt-0.5">{r.code} • {r.factory}</span></div></td>
+             <th className="px-4 py-3 text-right">Venda {timeContext.prevMonth.short.toUpperCase()}</th><th className="px-4 py-3 text-right">Venda {timeContext.currentMonth.short.toUpperCase()}</th><th className="px-4 py-3 text-right">Estoque</th><th className="px-4 py-3 text-center">Trânsito</th><th className="px-4 py-3 text-center">Cobertura (Dias)</th></tr></thead><tbody className="divide-y divide-slate-100 text-slate-700 font-medium">{(activeTab === 'conds' ? viewData.conds : activeTab === 'evaps' ? viewData.evaps : viewData.others).map((r, i) => { 
+                let daysClass = "text-slate-600 font-mono font-bold"; 
+                // NOVOS LIMITES DE COR (v6.23)
+                if(r.daysOfStock < 30) daysClass = "text-red-700 font-bold bg-red-50 px-2 py-0.5 rounded border border-red-100"; 
+                else if(r.daysOfStock < 60) daysClass = "text-amber-700 font-bold bg-amber-50 px-2 py-0.5 rounded border border-amber-100"; 
+                else if(r.daysOfStock > 150) daysClass = "text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-100"; 
+                
+                return (<tr key={i} className="hover:bg-slate-50 transition-colors"><td className="px-4 py-3"><div className="flex flex-col"><span className="font-bold text-slate-800 truncate max-w-xs" title={r.desc}>{r.desc}</span><span className="text-[10px] text-slate-500 font-mono mt-0.5">{r.code} • {r.factory}</span></div></td>
              <td className="px-4 py-3 text-right font-mono text-slate-400">{Formatters.number(r.twoMonthsAgoSales)}</td>
              <td className="px-4 py-3 text-right font-mono text-slate-500">{Formatters.number(r.prevMonthSales)}</td><td className="px-4 py-3 text-right font-mono text-slate-800 font-bold">{Formatters.number(r.currentMonthSales)}</td><td className="px-4 py-3 text-right font-mono font-bold text-slate-800">{r.stock}</td><td className="px-4 py-3 text-center">{r.transitQty > 0 ? (<div className="inline-block text-center leading-tight bg-blue-50 px-2 py-0.5 rounded border border-blue-100"><span className="block font-bold text-blue-700 text-[10px]">{r.transitQty}</span>{r.transitDate && <span className="block text-[8px] text-slate-500 mt-0.5">{Formatters.date(r.transitDate)}</span>}</div>) : <span className="text-slate-300">-</span>}</td><td className="px-4 py-3 text-center"><span className={daysClass}>{r.daysOfStock > 900 ? '∞' : Formatters.number(r.daysOfStock)}</span></td></tr>);})}</tbody></table></div>
           </Card>
@@ -948,7 +960,6 @@ const PurchaseManager = ({ user }) => {
            }
         });
         
-        // Processamento
         for (const docSnapshot of targetOrders) {
            const orderData = docSnapshot.data();
            let orderChanged = false;
@@ -961,7 +972,6 @@ const PurchaseManager = ({ user }) => {
               if (invoices && invoices.length > 0) {
                  let pending = item.qty - (item.invoiced || 0);
                  
-                 // Filtrar apenas notas não usadas neste item específico
                  const usableInvoices = invoices.filter(inv => {
                     const alreadyUsed = item.history && item.history.some(h => String(h.nfKey).trim() === String(inv.nfKey).trim());
                     if(alreadyUsed) duplicatedSkipped++;
@@ -969,11 +979,9 @@ const PurchaseManager = ({ user }) => {
                  });
 
                  if (pending > 0 && usableInvoices.length > 0) {
-                    // Consumir
                     usableInvoices.forEach(currentInvoice => {
                        if (pending <= 0) return;
                        
-                       // Faturar APENAS a quantidade da nota (limitado pelo pendente do pedido)
                        const toTake = Math.min(pending, currentInvoice.qty);
                        
                        item.history = [...(item.history || []), {
