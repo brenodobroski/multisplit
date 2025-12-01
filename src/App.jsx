@@ -1,14 +1,16 @@
 /**
- * GESTOR MULTISPLIT ENTERPRISE v6.21 (DYNAMIC STOCK COVERAGE CALC)
+ * GESTOR MULTISPLIT ENTERPRISE v6.22 (SMART STOCK DAYS LOGIC)
  * ==================================================================================
- * Atualizações v6.21:
- * 1. CÁLCULO DE COBERTURA DE ESTOQUE (Ajuste Fino):
- * - Lógica: (Estoque + Trânsito) / Média Venda Diária.
- * - Média Venda Diária: (Venda Mês Anterior + Venda Mês Atual) / Dias Decorridos.
- * - Dias Decorridos: Dias totais do mês anterior + Dia atual do mês corrente.
- * - Exemplo (1º Dez): (Venda Nov + Venda Dez) / (30 + 1).
- * 2. MANUTENÇÃO:
- * - Mantidas todas as funcionalidades anteriores (Reconciliação NF, Edição, Relatórios).
+ * Atualizações v6.22:
+ * 1. CÁLCULO DE DIAS DE ESTOQUE HÍBRIDO (Smart Calculation):
+ * - Até o dia 10 do mês: Usa (Vendas Mês Anterior + Vendas 2 Meses Atrás) / Dias Totais desses meses.
+ * -> Evita distorção de "início de mês" onde a venda atual é baixa.
+ * - A partir do dia 11: Usa (Vendas Mês Atual + Vendas Mês Anterior) / Dias Corridos.
+ * 2. VISUALIZAÇÃO:
+ * - Adicionada coluna "Venda [2 Meses Atrás]" na tabela do fornecedor.
+ * - Agora temos a visão completa: 2 Meses Atrás | Mês Anterior | Mês Atual.
+ * 3. MANUTENÇÃO:
+ * - Lógicas de NF, Edição e Exportação mantidas e integradas ao novo cálculo.
  * ==================================================================================
  */
 
@@ -419,21 +421,26 @@ const BIDashboard = ({ user }) => {
   const matrixFileRef = useRef(null);
   const transitFileRef = useRef(null);
 
-  // 1. DETERMINAÇÃO AUTOMÁTICA DO TEMPO
+  // 1. DETERMINAÇÃO AUTOMÁTICA DO TEMPO & DIA ATUAL
   const timeContext = useMemo(() => {
     const today = new Date();
     const currentMonthIndex = today.getMonth(); 
+    const currentDay = today.getDate(); // DIA DO MÊS ATUAL
+
     const currentMonth = MONTH_CONFIG[currentMonthIndex];
     const prevMonthIndex = (currentMonthIndex - 1 + 12) % 12;
     const prevMonth = MONTH_CONFIG[prevMonthIndex];
+    
+    // NOVO: Mês de 2 meses atrás
+    const twoMonthsAgoIndex = (currentMonthIndex - 2 + 12) % 12;
+    const twoMonthsAgo = MONTH_CONFIG[twoMonthsAgoIndex];
     
     const last3Months = [
       MONTH_CONFIG[(currentMonthIndex - 2 + 12) % 12],
       MONTH_CONFIG[(currentMonthIndex - 1 + 12) % 12],
       MONTH_CONFIG[currentMonthIndex]
     ];
-
-    return { currentMonth, prevMonth, last3Months };
+    return { currentMonth, prevMonth, twoMonthsAgo, last3Months, currentDay };
   }, []);
 
   useEffect(() => {
@@ -561,22 +568,38 @@ const BIDashboard = ({ user }) => {
        const transitInfo = transitData[normalizeSKU(item.code)] || { qty: 0, date: null };
        const transitDate = transitInfo.date ? new Date(transitInfo.date + 'T12:00:00') : null; 
        
-       // DADOS DINÂMICOS
        const currentMonthSales = item[timeContext.currentMonth.short] || 0;
-       const previousMonthSales = item[timeContext.prevMonth.short] || 0; 
+       const prevMonthSales = item[timeContext.prevMonth.short] || 0; 
+       const twoMonthsAgoSales = item[timeContext.twoMonthsAgo.short] || 0;
 
-       // CÁLCULO DE DIAS DECORRIDOS EXATO (v6.21)
+       // --- LÓGICA HÍBRIDA INTELIGENTE (v6.22) ---
        const today = new Date();
-       // Pega o número total de dias do mês anterior (dia 0 do mês atual retorna o último do anterior)
-       const daysInPrevMonth = new Date(today.getFullYear(), today.getMonth(), 0).getDate();
-       const daysInCurrentMonth = today.getDate(); // Dia de hoje
-       const totalDaysElapsed = daysInPrevMonth + daysInCurrentMonth;
-
-       const salesLast2Months = currentMonthSales + previousMonthSales;
+       const dayOfMonth = timeContext.currentDay;
        
-       // Evita divisão por zero se o sistema for iniciado em um dia impossível (segurança)
-       const validDays = totalDaysElapsed > 0 ? totalDaysElapsed : 1;
-       const dailyAvgSales = salesLast2Months / validDays;
+       let salesPeriodTotal = 0;
+       let daysPeriodTotal = 1;
+
+       if (dayOfMonth <= 10) {
+          // MODO INÍCIO DE MÊS: Usa (Mês Anterior + 2 Meses Atrás)
+          salesPeriodTotal = prevMonthSales + twoMonthsAgoSales;
+          
+          // Calcular dias totais dos meses fechados (aprox 61 dias)
+          const daysInPrev = new Date(today.getFullYear(), today.getMonth(), 0).getDate();
+          const daysIn2Prev = new Date(today.getFullYear(), today.getMonth() - 1, 0).getDate();
+          daysPeriodTotal = daysInPrev + daysIn2Prev;
+
+       } else {
+          // MODO NORMAL: Usa (Mês Atual + Mês Anterior)
+          salesPeriodTotal = currentMonthSales + prevMonthSales;
+
+          // Calcular dias corridos: Dias Totais Mês Anterior + Dias Corridos Mês Atual
+          const daysInPrev = new Date(today.getFullYear(), today.getMonth(), 0).getDate();
+          daysPeriodTotal = daysInPrev + dayOfMonth;
+       }
+
+       // Evita divisão por zero
+       const validDays = daysPeriodTotal > 0 ? daysPeriodTotal : 1;
+       const dailyAvgSales = salesPeriodTotal / validDays;
 
        const totalAvail = (item.stock || 0) + transitInfo.qty;
        
@@ -584,7 +607,15 @@ const BIDashboard = ({ user }) => {
        if (dailyAvgSales > 0) daysOfStock = Math.ceil(totalAvail / dailyAvgSales); 
        else if (totalAvail > 0) daysOfStock = 999;
        
-       return { ...item, transitQty: transitInfo.qty, transitDate, currentMonthSales, previousMonthSales, daysOfStock };
+       return { 
+          ...item, 
+          transitQty: transitInfo.qty, 
+          transitDate, 
+          currentMonthSales, 
+          prevMonthSales, 
+          twoMonthsAgoSales, 
+          daysOfStock 
+       };
     });
   }, [data, transitData, timeContext]);
 
@@ -697,6 +728,7 @@ const BIDashboard = ({ user }) => {
                 </div>
              </div>
              <div className="flex gap-6 items-center">
+               {/* NOVO BLOCO TOTAL 2024 */}
                <div className="text-right border-r border-slate-200 pr-6 hidden md:block">
                  <span className="block text-[10px] font-bold text-slate-400 uppercase">Total 2024</span>
                  <span className="block text-lg font-bold text-slate-500">{Formatters.number(viewData.total24)}</span>
@@ -744,7 +776,12 @@ const BIDashboard = ({ user }) => {
                 <div className="flex bg-white border border-slate-300 rounded-md p-0.5">{[{id:'conds', label:'Condensadoras'},{id:'evaps', label:'Evaporadoras'},{id:'others', label:'Outros'}].map(t => (<button key={t.id} onClick={()=>setActiveTab(t.id)} className={`px-4 py-1.5 rounded-sm text-xs font-bold transition-all ${activeTab===t.id ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>{t.label}</button>))}</div>
                 <div className="flex items-center gap-3"><label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-slate-700 select-none"><input type="checkbox" checked={hideZeroSales} onChange={()=>setHideZeroSales(!hideZeroSales)} className="rounded text-blue-600 focus:ring-blue-500 border-slate-300" />Ocultar Sem Vendas</label><select value={stockFilter} onChange={e=>setStockFilter(e.target.value)} className="text-xs border border-slate-300 rounded-md px-2 py-1.5 bg-white font-medium focus:ring-1 focus:ring-blue-500 outline-none cursor-pointer"><option value="ALL">Todos Status</option><option value="CRITICAL">🚨 Crítico (&lt;7d)</option><option value="LOW">⚠️ Baixo (&lt;15d)</option><option value="EXCESS">📦 Excesso (&gt;120d)</option></select><div className="relative w-56"><SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" /><input value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} placeholder="Buscar SKU..." className="w-full pl-8 pr-3 py-1.5 border border-slate-300 rounded-md text-xs focus:ring-1 focus:ring-blue-500 outline-none" /></div></div>
              </div>
-             <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200"><tr><th className="px-4 py-3 w-1/3">Produto / SKU</th><th className="px-4 py-3 text-right">Venda {timeContext.prevMonth.short.toUpperCase()}</th><th className="px-4 py-3 text-right">Venda {timeContext.currentMonth.short.toUpperCase()}</th><th className="px-4 py-3 text-right">Estoque</th><th className="px-4 py-3 text-center">Trânsito</th><th className="px-4 py-3 text-center">Cobertura (Dias)</th></tr></thead><tbody className="divide-y divide-slate-100 text-slate-700 font-medium">{(activeTab === 'conds' ? viewData.conds : activeTab === 'evaps' ? viewData.evaps : viewData.others).map((r, i) => { let daysClass = "text-slate-600 font-mono font-bold"; if(r.daysOfStock < 7) daysClass = "text-red-700 font-bold bg-red-50 px-2 py-0.5 rounded border border-red-100"; else if(r.daysOfStock < 15) daysClass = "text-amber-700 font-bold bg-amber-50 px-2 py-0.5 rounded border border-amber-100"; else if(r.daysOfStock > 120) daysClass = "text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-100"; return (<tr key={i} className="hover:bg-slate-50 transition-colors"><td className="px-4 py-3"><div className="flex flex-col"><span className="font-bold text-slate-800 truncate max-w-xs" title={r.desc}>{r.desc}</span><span className="text-[10px] text-slate-500 font-mono mt-0.5">{r.code} • {r.factory}</span></div></td><td className="px-4 py-3 text-right font-mono text-slate-500">{Formatters.number(r.previousMonthSales)}</td><td className="px-4 py-3 text-right font-mono text-slate-800 font-bold">{Formatters.number(r.currentMonthSales)}</td><td className="px-4 py-3 text-right font-mono font-bold text-slate-800">{r.stock}</td><td className="px-4 py-3 text-center">{r.transitQty > 0 ? (<div className="inline-block text-center leading-tight bg-blue-50 px-2 py-0.5 rounded border border-blue-100"><span className="block font-bold text-blue-700 text-[10px]">{r.transitQty}</span>{r.transitDate && <span className="block text-[8px] text-slate-500 mt-0.5">{Formatters.date(r.transitDate)}</span>}</div>) : <span className="text-slate-300">-</span>}</td><td className="px-4 py-3 text-center"><span className={daysClass}>{r.daysOfStock > 900 ? '∞' : Formatters.number(r.daysOfStock)}</span></td></tr>);})}</tbody></table></div>
+             <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200"><tr><th className="px-4 py-3 w-1/3">Produto / SKU</th>
+             {/* COLUNA EXTRA (2 Meses Atrás) para visão completa */}
+             <th className="px-4 py-3 text-right">Venda {timeContext.twoMonthsAgo.short.toUpperCase()}</th>
+             <th className="px-4 py-3 text-right">Venda {timeContext.prevMonth.short.toUpperCase()}</th><th className="px-4 py-3 text-right">Venda {timeContext.currentMonth.short.toUpperCase()}</th><th className="px-4 py-3 text-right">Estoque</th><th className="px-4 py-3 text-center">Trânsito</th><th className="px-4 py-3 text-center">Cobertura (Dias)</th></tr></thead><tbody className="divide-y divide-slate-100 text-slate-700 font-medium">{(activeTab === 'conds' ? viewData.conds : activeTab === 'evaps' ? viewData.evaps : viewData.others).map((r, i) => { let daysClass = "text-slate-600 font-mono font-bold"; if(r.daysOfStock < 7) daysClass = "text-red-700 font-bold bg-red-50 px-2 py-0.5 rounded border border-red-100"; else if(r.daysOfStock < 15) daysClass = "text-amber-700 font-bold bg-amber-50 px-2 py-0.5 rounded border border-amber-100"; else if(r.daysOfStock > 120) daysClass = "text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-100"; return (<tr key={i} className="hover:bg-slate-50 transition-colors"><td className="px-4 py-3"><div className="flex flex-col"><span className="font-bold text-slate-800 truncate max-w-xs" title={r.desc}>{r.desc}</span><span className="text-[10px] text-slate-500 font-mono mt-0.5">{r.code} • {r.factory}</span></div></td>
+             <td className="px-4 py-3 text-right font-mono text-slate-400">{Formatters.number(r.twoMonthsAgoSales)}</td>
+             <td className="px-4 py-3 text-right font-mono text-slate-500">{Formatters.number(r.prevMonthSales)}</td><td className="px-4 py-3 text-right font-mono text-slate-800 font-bold">{Formatters.number(r.currentMonthSales)}</td><td className="px-4 py-3 text-right font-mono font-bold text-slate-800">{r.stock}</td><td className="px-4 py-3 text-center">{r.transitQty > 0 ? (<div className="inline-block text-center leading-tight bg-blue-50 px-2 py-0.5 rounded border border-blue-100"><span className="block font-bold text-blue-700 text-[10px]">{r.transitQty}</span>{r.transitDate && <span className="block text-[8px] text-slate-500 mt-0.5">{Formatters.date(r.transitDate)}</span>}</div>) : <span className="text-slate-300">-</span>}</td><td className="px-4 py-3 text-center"><span className={daysClass}>{r.daysOfStock > 900 ? '∞' : Formatters.number(r.daysOfStock)}</span></td></tr>);})}</tbody></table></div>
           </Card>
 
           <Modal isOpen={exportModalOpen} onClose={() => setExportModalOpen(false)} title="Exportar Relatório Executivo" size="sm" actions={<><Button variant="secondary" onClick={() => setExportModalOpen(false)}>Cancelar</Button><Button onClick={handleExportReport} icon={Download}>Gerar Excel</Button></>}>
