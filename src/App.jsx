@@ -9,6 +9,9 @@
  * - O seletor de visão (Geral/Loja/E-com) foi movido da home para dentro da visão
  * de cada marca.
  * - A página inicial sempre reseta para a visão "TOTAL" automaticamente.
+ * 3. ESTOQUE DETALHADO (NOVO):
+ * - Adicionado detalhamento de estoque (Condensadoras vs Evaporadoras) no header
+ * da visão por marca.
  * ==================================================================================
  */
 
@@ -616,15 +619,21 @@ const BIDashboard = ({ user }) => {
     const stock = enrichedData.reduce((a,b) => a + b.stock, 0);
     const transit = enrichedData.reduce((a,b) => a + b.transitQty, 0);
     const byBrand = {};
-    ALLOWED_BRANDS.forEach(b => byBrand[b] = { name: b, val: 0, val24: 0, stock: 0, transit: 0, conds: 0, evaps: 0 });
+    ALLOWED_BRANDS.forEach(b => byBrand[b] = { name: b, val: 0, val24: 0, stock: 0, transit: 0, conds: 0, evaps: 0, stockConds: 0, stockEvaps: 0 });
     enrichedData.forEach(r => {
        if(byBrand[r.brand]) {
          byBrand[r.brand].val += r.sales25;
          byBrand[r.brand].val24 += r.sales24; 
          byBrand[r.brand].stock += r.stock;
          byBrand[r.brand].transit += r.transitQty;
-         if(r.type === 'Condensadora') byBrand[r.brand].conds += 1;
-         if(r.type === 'Evaporadora') byBrand[r.brand].evaps += 1;
+         if(r.type === 'Condensadora') {
+             byBrand[r.brand].conds += 1;
+             byBrand[r.brand].stockConds += r.stock;
+         }
+         if(r.type === 'Evaporadora') {
+             byBrand[r.brand].evaps += 1;
+             byBrand[r.brand].stockEvaps += r.stock;
+         }
        }
     });
     return { total25, stock, transit, brands: Object.values(byBrand).sort((a,b) => b.val - a.val) };
@@ -669,8 +678,12 @@ const BIDashboard = ({ user }) => {
     const total24 = brandKPI ? brandKPI.val24 : 0;
     const total25 = brandKPI ? brandKPI.val : 0;
     const growth = total24 > 0 ? ((total25 - total24) / total24) : 0;
+    
+    // CÁLCULO DE ESTOQUE DETALHADO (NOVO)
+    const stockConds = items.filter(r => r.type === 'Condensadora').reduce((a,b)=>a+b.stock,0);
+    const stockEvaps = items.filter(r => r.type === 'Evaporadora').reduce((a,b)=>a+b.stock,0);
 
-    return { items: filtered, conds: filtered.filter(r => r.type === 'Condensadora'), evaps: filtered.filter(r => r.type === 'Evaporadora'), others: filtered.filter(r => r.type === 'Outros'), total: total25, total24: total24, stock: items.reduce((a,b)=>a+b.stock,0), recentSales, bestSellers, growth };
+    return { items: filtered, conds: filtered.filter(r => r.type === 'Condensadora'), evaps: filtered.filter(r => r.type === 'Evaporadora'), others: filtered.filter(r => r.type === 'Outros'), total: total25, total24: total24, stock: items.reduce((a,b)=>a+b.stock,0), stockConds, stockEvaps, recentSales, bestSellers, growth };
   }, [enrichedData, viewBrand, searchTerm, stockFilter, hideZeroSales, kpis, timeContext, salesView]);
 
   // --- EXPORTAÇÃO FLEXÍVEL ---
@@ -814,7 +827,19 @@ const BIDashboard = ({ user }) => {
              <div className="flex gap-6 items-center">
                 <div className="text-right border-r border-slate-200 pr-6 hidden md:block"><span className="block text-[10px] font-bold text-slate-400 uppercase">Total 2024</span><span className="block text-lg font-bold text-slate-500">{Formatters.number(viewData.total24)}</span></div>
                 <div className="text-right border-r border-slate-200 pr-6 hidden md:block"><span className="block text-[10px] font-bold text-slate-400 uppercase">Total 2025</span><span className="block text-lg font-bold text-slate-800">{Formatters.number(viewData.total)}</span></div>
-                <div className="text-right hidden md:block border-r border-slate-200 pr-6"><span className="block text-[10px] font-bold text-slate-400 uppercase">Estoque Físico</span><span className="block text-lg font-bold text-slate-800">{Formatters.number(viewData.stock)}</span></div>
+                
+                {/* ESTOQUE FÍSICO COM DETALHAMENTO (COND/EVAP) */}
+                <div className="text-right hidden md:block border-r border-slate-200 pr-6">
+                   <span className="block text-[10px] font-bold text-slate-400 uppercase">Estoque Físico</span>
+                   <div className="flex flex-col items-end">
+                      <span className="block text-lg font-bold text-slate-800 leading-none">{Formatters.number(viewData.stock)}</span>
+                      <div className="flex gap-1 mt-1">
+                         <span className="text-[9px] font-bold text-slate-500 bg-slate-100 px-1 py-0.5 rounded" title="Condensadoras">C: {Formatters.number(viewData.stockConds)}</span>
+                         <span className="text-[9px] font-bold text-slate-500 bg-slate-100 px-1 py-0.5 rounded" title="Evaporadoras">E: {Formatters.number(viewData.stockEvaps)}</span>
+                      </div>
+                   </div>
+                </div>
+
                 <Button variant="primary" size="sm" icon={FileDown} onClick={() => setExportModalOpen(true)} className="shadow-md">Exportar Relatório</Button>
              </div>
           </div>
@@ -862,7 +887,7 @@ const BIDashboard = ({ user }) => {
           </div>
        </div>
        
-       {!kpis ? (<div className="py-20 text-center border-2 border-dashed border-slate-300 rounded-lg bg-slate-50"><BarChart3 className="w-12 h-12 text-slate-300 mx-auto mb-3" /><p className="text-slate-700 font-bold text-sm">Nenhum dado carregado</p><p className="text-slate-500 text-xs mt-1">Realize o upload das planilhas (Matriz, E-comm e Trânsito) para começar.</p></div>) : (<><div className="grid grid-cols-1 md:grid-cols-4 gap-4">{[{ label: `Vendas 25 (Total)`, val: kpis.total25, icon: TrendingUp, color: "text-blue-700 bg-blue-50 border-blue-100" }, { label: "Estoque Físico", val: kpis.stock, icon: Box, color: "text-emerald-700 bg-emerald-50 border-emerald-100" }, { label: "Em Trânsito", val: kpis.transit, icon: Ship, color: "text-purple-700 bg-purple-50 border-purple-100" }, { label: "Fabricantes", val: kpis.brands.length, icon: Layers, color: "text-amber-700 bg-amber-50 border-amber-100" }].map((stat, i) => (<Card key={i} className="p-4 flex items-center gap-4 hover:-translate-y-1 transition-transform"><div className={`w-10 h-10 rounded flex items-center justify-center border ${stat.color}`}><stat.icon className="w-5 h-5" /></div><div><p className="text-2xl font-bold text-slate-900 leading-none mb-0.5">{Formatters.number(stat.val)}</p><p className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">{stat.label}</p></div></Card>))}</div><div><h3 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">Performance por Fabricante</h3><div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">{kpis.brands.map(b => (<Card key={b.name} onClick={()=>{setViewBrand(b.name); setSearchTerm(''); setActiveTab('conds');}} hoverable className="p-5 flex flex-col justify-between h-40 group border-l-[4px] border-l-slate-200 hover:border-l-blue-700"><div className="flex justify-between items-start"><span className="font-bold text-lg text-slate-800">{b.name}</span><ArrowUpRight className="w-4 h-4 text-slate-300 group-hover:text-blue-700 transition-colors"/></div><div><p className="text-2xl font-bold text-slate-900 tracking-tight">{Formatters.number(b.val)}</p><p className="text-[10px] text-slate-400 font-bold uppercase mt-1">Unidades Vendidas (Total)</p><div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100"><span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">{b.conds} Conds</span><span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">{b.evaps} Evaps</span></div></div></Card>))}</div></div></>)}
+       {!kpis ? (<div className="py-20 text-center border-2 border-dashed border-slate-300 rounded-lg bg-slate-50"><BarChart3 className="w-12 h-12 text-slate-300 mx-auto mb-3" /><p className="text-slate-700 font-bold text-sm">Nenhum dado carregado</p><p className="text-slate-500 text-xs mt-1">Realize o upload das planilhas (Matriz, E-comm e Trânsito) para começar.</p></div>) : (<><div className="grid grid-cols-1 md:grid-cols-4 gap-4">{[{ label: `Vendas 25 (Total)`, val: kpis.total25, icon: TrendingUp, color: "text-blue-700 bg-blue-50 border-blue-100" }, { label: "Estoque Físico", val: kpis.stock, icon: Box, color: "text-emerald-700 bg-emerald-50 border-emerald-100" }, { label: "Em Trânsito", val: kpis.transit, icon: Ship, color: "text-purple-700 bg-purple-50 border-purple-100" }, { label: "Fabricantes", val: kpis.brands.length, icon: Layers, color: "text-amber-700 bg-amber-50 border-amber-100" }].map((stat, i) => (<Card key={i} className="p-4 flex items-center gap-4 hover:-translate-y-1 transition-transform"><div className={`w-10 h-10 rounded flex items-center justify-center border ${stat.color}`}><stat.icon className="w-5 h-5" /></div><div><p className="text-2xl font-bold text-slate-900 leading-none mb-0.5">{Formatters.number(stat.val)}</p><p className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">{stat.label}</p></div></Card>))}</div><div><h3 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">Performance por Fabricante</h3><div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">{kpis.brands.map(b => (<Card key={b.name} onClick={()=>{setViewBrand(b.name); setSearchTerm(''); setActiveTab('conds');}} hoverable className="p-5 flex flex-col justify-between h-40 group border-l-[4px] border-l-slate-200 hover:border-l-blue-700"><div className="flex justify-between items-start"><span className="font-bold text-lg text-slate-800">{b.name}</span><ArrowUpRight className="w-4 h-4 text-slate-300 group-hover:text-blue-700 transition-colors"/></div><div><p className="text-2xl font-bold text-slate-900 tracking-tight">{Formatters.number(b.val)}</p><p className="text-[10px] text-slate-400 font-bold uppercase mt-1">Unidades Vendidas (Total)</p><div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100"><span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded" title="Estoque Condensadoras">C: {Formatters.number(b.stockConds)}</span><span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded" title="Estoque Evaporadoras">E: {Formatters.number(b.stockEvaps)}</span></div></div></Card>))}</div></div></>)}
     </div>
   );
 };
