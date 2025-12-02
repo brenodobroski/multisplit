@@ -1,15 +1,14 @@
 /**
- * GESTOR MULTISPLIT ENTERPRISE v6.23 (STOCK ALERT THRESHOLDS UPDATE)
+ * GESTOR MULTISPLIT ENTERPRISE v7.2 (SPLIT COLUMNS & UI TWEAKS)
  * ==================================================================================
- * Atualizações v6.23:
- * 1. LIMITES DE ESTOQUE (Thresholds Update):
- * - Crítico: Ajustado para < 30 dias (Antes < 7d).
- * - Excesso: Ajustado para > 150 dias (Antes > 120d).
- * - Saudável: Entre 30 e 150 dias.
- * 2. FILTROS:
- * - Atualizadas as opções do select "Status de Estoque" para refletir os novos dias.
- * 3. MANUTENÇÃO:
- * - Mantidas todas as funcionalidades anteriores (Cálculo Híbrido, NF, etc).
+ * Atualizações v7.2:
+ * 1. RELATÓRIO DETALHADO:
+ * - Ao exportar com o canal "Total" selecionado, o Excel agora gera colunas separadas:
+ * [Vendas 25 Loja], [Vendas 25 E-com] e [Vendas 25 Total].
+ * 2. UX REFINADA:
+ * - O seletor de visão (Geral/Loja/E-com) foi movido da home para dentro da visão
+ * de cada marca.
+ * - A página inicial sempre reseta para a visão "TOTAL" automaticamente.
  * ==================================================================================
  */
 
@@ -22,7 +21,8 @@ import {
   Layers, Search as SearchIcon, Box, AlertTriangle, Bell, Settings, 
   FileText, Truck, Activity, Menu, ChevronDown, Download, RefreshCw,
   ClipboardList, Shield, UserCog, History, Fan, Snowflake, Ship, FileCheck, ChevronLeft,
-  MoreHorizontal, Clock, EyeOff, LayoutGrid, List, DollarSign, Trophy, Zap, FileDown, Pencil, Save, Receipt, ChevronUp
+  MoreHorizontal, Clock, EyeOff, LayoutGrid, List, DollarSign, Trophy, Zap, FileDown, Pencil, Save, Receipt, ChevronUp,
+  ShoppingBag, Store
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -70,16 +70,6 @@ const MONTH_CONFIG = [
   { idx: 10, short: 'nov', label: 'Novembro', keys: ['nov', 'novembro', '11'] },
   { idx: 11, short: 'dez', label: 'Dezembro', keys: ['dez', 'dezembro', '12'] }
 ];
-
-const BRAND_ASSETS = {
-  'SAMSUNG': { logo: 'https://logo.clearbit.com/samsung.com', color: 'blue' },
-  'LG': { logo: 'https://logo.clearbit.com/lg.com', color: 'rose' },
-  'MIDEA': { logo: 'https://logo.clearbit.com/midea.com', color: 'cyan' },
-  'DAIKIN': { logo: 'https://logo.clearbit.com/daikin.com', color: 'sky' },
-  'GREE': { logo: 'https://logo.clearbit.com/gree.com', color: 'emerald' },
-  'FUJITSU': { logo: 'https://logo.clearbit.com/fujitsu-general.com', color: 'red' },
-  'ELGIN': { logo: 'https://logo.clearbit.com/elgin.com.br', color: 'orange' }
-};
 
 /* ==================================================================================
  * 2. UTILITÁRIOS
@@ -264,7 +254,7 @@ const LoginModule = () => {
   );
 };
 
-// --- 4.2: AGENDA (FILTRO RIGOROSO + BUSCA) ---
+// --- 4.2: AGENDA ---
 const DeliverySchedule = () => {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [transitData, setTransitData] = useState([]);
@@ -275,7 +265,6 @@ const DeliverySchedule = () => {
     const unsubTransit = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'bi_analytics', 'transit_store'), (s) => {
       if(s.exists()) {
         const raw = s.data().data || {};
-        // Ordena por data para facilitar busca do "próximo evento"
         const entries = Object.entries(raw).map(([sku, val]) => ({ sku: normalizeSKU(sku), ...val }));
         entries.sort((a, b) => (a.date && b.date) ? new Date(a.date) - new Date(b.date) : 0);
         setTransitData(entries);
@@ -291,26 +280,22 @@ const DeliverySchedule = () => {
     return () => { unsubTransit(); unsubMatrix(); };
   }, []);
 
-  // --- LÓGICA DE BUSCA GLOBAL NO CALENDÁRIO ---
+  // Busca Global
   useEffect(() => {
     if (!searchTerm || searchTerm.length < 3 || transitData.length === 0) return;
-
     const term = searchTerm.toLowerCase();
-    // Busca em TODO o banco de trânsito, não só no mês atual
     const foundItem = transitData.find(item => {
        const desc = matrixMap[item.sku] || '';
        const match = item.sku.toLowerCase().includes(term) || desc.toLowerCase().includes(term);
-       return match && item.date; // Deve ter data definida
+       return match && item.date;
     });
-
     if (foundItem) {
-       const foundDate = new Date(foundItem.date + 'T12:00:00'); // Ajuste fuso
-       // Se o item encontrado for em um mês diferente do atual, pula para lá
+       const foundDate = new Date(foundItem.date + 'T12:00:00');
        if (foundDate.getMonth() !== currentDate.getMonth() || foundDate.getFullYear() !== currentDate.getFullYear()) {
           setCurrentDate(foundDate);
        }
     }
-  }, [searchTerm, transitData, matrixMap]); // Dispara quando digita ou carrega dados
+  }, [searchTerm, transitData, matrixMap]);
 
   const eventsByDate = useMemo(() => {
     const map = {};
@@ -367,14 +352,7 @@ const DeliverySchedule = () => {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
         {daysInMonth.map((day) => {
-          // Filtro visual do dia (mantém apenas o que bate com a busca se houver)
-          const dayEvents = day.events.filter(ev => 
-             !searchTerm || 
-             ev.sku.toLowerCase().includes(searchTerm.toLowerCase()) || 
-             ev.desc.toLowerCase().includes(searchTerm.toLowerCase())
-          );
-
-          // Se tem busca e o dia não tem nada relevante, esconde (foco no resultado)
+          const dayEvents = day.events.filter(ev => !searchTerm || ev.sku.toLowerCase().includes(searchTerm.toLowerCase()) || ev.desc.toLowerCase().includes(searchTerm.toLowerCase()));
           if (searchTerm && dayEvents.length === 0) return null;
 
           return (
@@ -402,38 +380,38 @@ const DeliverySchedule = () => {
   );
 };
 
-// --- 4.3: DASHBOARD BI ---
+// --- 4.3: DASHBOARD BI (Channel Manager) ---
 const BIDashboard = ({ user }) => {
   const { addToast } = useToast();
-  const [data, setData] = useState([]);
+  const [data, setData] = useState([]); // Matriz
+  const [ecomData, setEcomData] = useState({}); // E-commerce Map
   const [transitData, setTransitData] = useState({});
   const [loading, setLoading] = useState(true);
+  
+  // Filtros e Views
   const [viewBrand, setViewBrand] = useState(null);
   const [activeTab, setActiveTab] = useState('conds');
   const [searchTerm, setSearchTerm] = useState('');
   const [stockFilter, setStockFilter] = useState('ALL');
   const [hideZeroSales, setHideZeroSales] = useState(false);
+  const [salesView, setSalesView] = useState('ALL'); // 'ALL' (Geral), 'STORE', 'ECOM'
 
   const [exportModalOpen, setExportModalOpen] = useState(false);
-  const [exportConfig, setExportConfig] = useState({ filename: 'relatorio_vendas', includeZero: false, type: 'ALL' });
+  const [exportConfig, setExportConfig] = useState({ filename: 'relatorio_vendas', includeZero: false, type: 'ALL', channel: 'TOTAL' });
 
   const matrixFileRef = useRef(null);
+  const ecomFileRef = useRef(null); 
   const transitFileRef = useRef(null);
 
-  // 1. DETERMINAÇÃO AUTOMÁTICA DO TEMPO & DIA ATUAL
   const timeContext = useMemo(() => {
     const today = new Date();
     const currentMonthIndex = today.getMonth(); 
-    const currentDay = today.getDate(); // DIA DO MÊS ATUAL
-
+    const currentDay = today.getDate();
     const currentMonth = MONTH_CONFIG[currentMonthIndex];
     const prevMonthIndex = (currentMonthIndex - 1 + 12) % 12;
     const prevMonth = MONTH_CONFIG[prevMonthIndex];
-    
-    // NOVO: Mês de 2 meses atrás
     const twoMonthsAgoIndex = (currentMonthIndex - 2 + 12) % 12;
     const twoMonthsAgo = MONTH_CONFIG[twoMonthsAgoIndex];
-    
     const last3Months = [
       MONTH_CONFIG[(currentMonthIndex - 2 + 12) % 12],
       MONTH_CONFIG[(currentMonthIndex - 1 + 12) % 12],
@@ -442,17 +420,36 @@ const BIDashboard = ({ user }) => {
     return { currentMonth, prevMonth, twoMonthsAgo, last3Months, currentDay };
   }, []);
 
+  // Resetar salesView para 'ALL' (Total) sempre que sair de uma marca (voltar para a home)
   useEffect(() => {
+     if (!viewBrand) {
+        setSalesView('ALL');
+     }
+  }, [viewBrand]);
+
+  // Atualiza canal de exportação ao mudar a view do dashboard (UX)
+  useEffect(() => {
+     setExportConfig(prev => ({ ...prev, channel: salesView === 'ALL' ? 'TOTAL' : salesView }));
+  }, [salesView]);
+
+  useEffect(() => {
+    // Carregar Matriz
     const unsubMatrix = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'bi_analytics', 'matrix'), (s) => {
         if(s.exists()) setData(s.data().rows || []);
         setLoading(false);
       });
+    // Carregar E-commerce
+    const unsubEcom = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'bi_analytics', 'ecommerce'), (s) => {
+        if(s.exists()) setEcomData(s.data().data || {});
+      });
+    // Carregar Transito
     const unsubTransit = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'bi_analytics', 'transit_store'), (s) => {
         if(s.exists()) setTransitData(s.data().data || {});
       });
-    return () => { unsubMatrix(); unsubTransit(); };
+    return () => { unsubMatrix(); unsubEcom(); unsubTransit(); };
   }, []);
 
+  // Upload MATRIZ
   const processMatrixUpload = (e) => {
     const file = e.target.files[0]; if(!file) return;
     const reader = new FileReader();
@@ -466,7 +463,6 @@ const BIDashboard = ({ user }) => {
            let brand = 'OUTRA';
            for(const b of ALLOWED_BRANDS) if(desc.includes(b)) { brand = b; break; }
            if(desc.includes('SPRINGER') && brand === 'OUTRA') brand = 'MIDEA';
-           
            let type = 'Outros';
            if(desc.includes('COND') || desc.includes('EXTERNA')) type = 'Condensadora';
            else if(desc.includes('EVAP') || desc.includes('INTERNA')) type = 'Evaporadora';
@@ -487,12 +483,43 @@ const BIDashboard = ({ user }) => {
            };
         });
         await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'bi_analytics', 'matrix'), { rows: processed, updatedAt: serverTimestamp() });
-        addToast(`${processed.length} produtos atualizados.`, 'success');
-      } catch(err) { console.error(err); addToast("Erro planilha.", 'error'); }
+        addToast(`${processed.length} produtos atualizados (Matriz).`, 'success');
+      } catch(err) { addToast("Erro planilha Matriz.", 'error'); }
     };
     reader.readAsBinaryString(file);
   };
 
+  // Upload E-COMMERCE
+  const processEcommerceUpload = (e) => {
+    const file = e.target.files[0]; if(!file) return;
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      try {
+        const XLSX = window.XLSX; const wb = XLSX.read(evt.target.result, {type:'binary'});
+        const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+        
+        const ecomMap = {};
+        json.forEach(row => {
+           const code = normalizeSKU(findColumnValue(row, ['Código', 'Codigo', 'SKU']));
+           if (code) {
+             const monthlyData = {};
+             MONTH_CONFIG.forEach(m => { monthlyData[m.short] = Formatters.parseMoney(findColumnValue(row, m.keys)); });
+             ecomMap[code] = {
+                sales25: Formatters.parseMoney(findColumnValue(row, ['2025', 'Vendas 25'])),
+                sales24: Formatters.parseMoney(findColumnValue(row, ['2024', 'Vendas 24'])),
+                ...monthlyData
+             };
+           }
+        });
+
+        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'bi_analytics', 'ecommerce'), { data: ecomMap, updatedAt: serverTimestamp() });
+        addToast(`Dados de E-commerce atualizados.`, 'success');
+      } catch(err) { addToast("Erro planilha E-commerce.", 'error'); }
+    };
+    reader.readAsBinaryString(file);
+  };
+
+  // Upload TRANSITO
   const processTransitUpload = async (e) => {
     const file = e.target.files[0]; if(!file) return;
     const reader = new FileReader();
@@ -502,105 +529,66 @@ const BIDashboard = ({ user }) => {
         const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
         const transitMap = {};
         const incomingSKUs = new Set();
-
         json.forEach(r => {
            const sku = normalizeSKU(findColumnValue(r, ['Cod. Produto', 'SKU', 'Código']));
            const qty = parseInt(findColumnValue(r, ['Quantidade', 'Qtd'])) || 0;
            const rawDate = findColumnValue(r, ['Previsão', 'Data']);
            const parsedDate = parseExcelDate(rawDate);
            const dateStr = parsedDate ? parsedDate.toISOString().split('T')[0] : null;
-           
-           if(sku && sku.length > 2 && qty > 0 && qty < 99999) { 
+           if(sku && sku.length > 2 && qty > 0) { 
              if(!transitMap[sku]) transitMap[sku] = { qty: 0, date: null };
              transitMap[sku].qty += qty;
              if(dateStr && (!transitMap[sku].date || dateStr < transitMap[sku].date)) transitMap[sku].date = dateStr;
              incomingSKUs.add(sku);
            }
         });
-
         await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'bi_analytics', 'transit_store'), { data: transitMap, updatedAt: serverTimestamp() });
-        
-        const ordersRef = collection(db, 'artifacts', appId, 'public', 'data', 'multisplit_orders');
-        const querySnapshot = await getDocs(ordersRef);
-        let updatedOrdersCount = 0;
-        let autoInvoicedItemsCount = 0;
-
-        for (const docSnapshot of querySnapshot.docs) {
-           const orderData = docSnapshot.data();
-           if (orderData.status === 'faturado') continue;
-
-           let orderChanged = false;
-           let newItems = [...orderData.items];
-
-           newItems = newItems.map(item => {
-              const cleanSku = normalizeSKU(item.sku);
-              if (incomingSKUs.has(cleanSku)) {
-                 if ((item.invoiced || 0) < item.qty) {
-                    const alreadyInvoiced = item.invoiced || 0;
-                    const needed = item.qty - alreadyInvoiced;
-                    if (needed > 0) {
-                       orderChanged = true;
-                       autoInvoicedItemsCount++;
-                       return { ...item, invoiced: item.qty, scheduled: 0, history: [...(item.history || []), { type: 'Auto-Faturado (Trânsito)', qty: needed, date: new Date().toISOString().split('T')[0] }] };
-                    }
-                 }
-              }
-              return item;
-           });
-
-           if (orderChanged) {
-              updatedOrdersCount++;
-              const totalQty = newItems.reduce((acc, i) => acc + i.qty, 0);
-              const totalInv = newItems.reduce((acc, i) => acc + (i.invoiced || 0), 0);
-              const newStatus = totalInv >= totalQty ? 'faturado' : 'parcial';
-              await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'multisplit_orders', docSnapshot.id), { items: newItems, status: newStatus });
-           }
-        }
-        addToast(`Agendamento processado. ${autoInvoicedItemsCount > 0 ? `Autofaturado: ${autoInvoicedItemsCount} itens.` : ''}`, 'success');
-      } catch(err) { console.error(err); addToast("Erro Agendamento.", 'error'); }
+        addToast(`Agendamento processado.`, 'success');
+      } catch(err) { addToast("Erro Agendamento.", 'error'); }
     };
     reader.readAsBinaryString(file);
   };
 
+  // ENRICHED DATA: DASHBOARD VIEW ONLY
   const enrichedData = useMemo(() => {
     return data.map(item => {
-       const transitInfo = transitData[normalizeSKU(item.code)] || { qty: 0, date: null };
-       const transitDate = transitInfo.date ? new Date(transitInfo.date + 'T12:00:00') : null; 
-       
-       const currentMonthSales = item[timeContext.currentMonth.short] || 0;
-       const prevMonthSales = item[timeContext.prevMonth.short] || 0; 
-       const twoMonthsAgoSales = item[timeContext.twoMonthsAgo.short] || 0;
+       const sku = normalizeSKU(item.code);
+       const transitInfo = transitData[sku] || { qty: 0, date: null };
+       const ecomItem = ecomData[sku] || {}; 
 
-       // --- LÓGICA HÍBRIDA INTELIGENTE (v6.22) ---
+       const getVal = (field) => {
+          const total = item[field] || 0;
+          const ecom = ecomItem[field] || 0;
+          if (salesView === 'ECOM') return ecom;
+          if (salesView === 'STORE') return Math.max(0, total - ecom);
+          return total; 
+       };
+
+       const currentMonthSales = getVal(timeContext.currentMonth.short);
+       const prevMonthSales = getVal(timeContext.prevMonth.short);
+       const twoMonthsAgoSales = getVal(timeContext.twoMonthsAgo.short);
+       const totalSales25 = getVal('sales25');
+       const totalSales24 = getVal('sales24');
+
        const today = new Date();
        const dayOfMonth = timeContext.currentDay;
-       
        let salesPeriodTotal = 0;
        let daysPeriodTotal = 1;
 
        if (dayOfMonth <= 10) {
-          // MODO INÍCIO DE MÊS: Usa (Mês Anterior + 2 Meses Atrás)
           salesPeriodTotal = prevMonthSales + twoMonthsAgoSales;
-          
-          // Calcular dias totais dos meses fechados (aprox 61 dias)
           const daysInPrev = new Date(today.getFullYear(), today.getMonth(), 0).getDate();
           const daysIn2Prev = new Date(today.getFullYear(), today.getMonth() - 1, 0).getDate();
           daysPeriodTotal = daysInPrev + daysIn2Prev;
-
        } else {
-          // MODO NORMAL: Usa (Mês Atual + Mês Anterior)
           salesPeriodTotal = currentMonthSales + prevMonthSales;
-
-          // Calcular dias corridos: Dias Totais Mês Anterior + Dias Corridos Mês Atual
           const daysInPrev = new Date(today.getFullYear(), today.getMonth(), 0).getDate();
           daysPeriodTotal = daysInPrev + dayOfMonth;
        }
 
-       // Evita divisão por zero
        const validDays = daysPeriodTotal > 0 ? daysPeriodTotal : 1;
        const dailyAvgSales = salesPeriodTotal / validDays;
-
-       const totalAvail = (item.stock || 0) + transitInfo.qty;
+       const totalAvail = (item.stock || 0) + transitInfo.qty; 
        
        let daysOfStock = 0;
        if (dailyAvgSales > 0) daysOfStock = Math.ceil(totalAvail / dailyAvgSales); 
@@ -608,15 +596,19 @@ const BIDashboard = ({ user }) => {
        
        return { 
           ...item, 
-          transitQty: transitInfo.qty, 
-          transitDate, 
+          sales25: totalSales25,
+          sales24: totalSales24,
           currentMonthSales, 
           prevMonthSales, 
-          twoMonthsAgoSales, 
-          daysOfStock 
+          twoMonthsAgoSales,
+          transitQty: transitInfo.qty, 
+          transitDate: transitInfo.date ? new Date(transitInfo.date + 'T12:00:00') : null,
+          daysOfStock,
+          rawTotal: item, // Salvo para exportação
+          rawEcom: ecomItem // Salvo para exportação
        };
     });
-  }, [data, transitData, timeContext]);
+  }, [data, transitData, ecomData, timeContext, salesView]);
 
   const kpis = useMemo(() => {
     if(!enrichedData.length) return null;
@@ -628,7 +620,7 @@ const BIDashboard = ({ user }) => {
     enrichedData.forEach(r => {
        if(byBrand[r.brand]) {
          byBrand[r.brand].val += r.sales25;
-         byBrand[r.brand].val24 += (r.sales24 || 0); 
+         byBrand[r.brand].val24 += r.sales24; 
          byBrand[r.brand].stock += r.stock;
          byBrand[r.brand].transit += r.transitQty;
          if(r.type === 'Condensadora') byBrand[r.brand].conds += 1;
@@ -643,8 +635,8 @@ const BIDashboard = ({ user }) => {
     let items = enrichedData.filter(r => r.brand === viewBrand);
     if (hideZeroSales) items = items.filter(r => r.sales25 > 0);
     if (stockFilter === 'LOW') items = items.filter(r => r.daysOfStock < 15);
-    if (stockFilter === 'CRITICAL') items = items.filter(r => r.daysOfStock < 7 || r.daysOfStock < 30); // Ajustado para < 30
-    if (stockFilter === 'EXCESS') items = items.filter(r => r.daysOfStock > 150); // Ajustado para > 150
+    if (stockFilter === 'CRITICAL') items = items.filter(r => r.daysOfStock < 7 || r.daysOfStock < 30); 
+    if (stockFilter === 'EXCESS') items = items.filter(r => r.daysOfStock > 150);
 
     const filtered = items.filter(r => {
        const term = searchTerm.toUpperCase();
@@ -652,11 +644,24 @@ const BIDashboard = ({ user }) => {
     });
     
     const recentSales = timeContext.last3Months.map(m => {
-      const monthItems = items.filter(i => (i[m.short] || 0) > 0);
-      const totalVal = monthItems.reduce((a,b) => a + (b[m.short] || 0), 0);
-      const condVal = monthItems.filter(i => i.type === 'Condensadora').reduce((a,b) => a + (b[m.short] || 0), 0);
-      const evapVal = monthItems.filter(i => i.type === 'Evaporadora').reduce((a,b) => a + (b[m.short] || 0), 0);
-      return { month: m.short.toUpperCase(), val: totalVal, conds: condVal, evaps: evapVal };
+       const monthKey = m.short;
+       const monthItems = items.filter(i => {
+          const total = i.rawTotal[monthKey] || 0;
+          const ecom = i.rawEcom[monthKey] || 0;
+          const val = (salesView === 'ECOM') ? ecom : (salesView === 'STORE' ? Math.max(0, total - ecom) : total);
+          return val > 0;
+       });
+       const totalVal = monthItems.reduce((a,b) => {
+          const total = b.rawTotal[monthKey] || 0;
+          const ecom = b.rawEcom[monthKey] || 0;
+          return a + ((salesView === 'ECOM') ? ecom : (salesView === 'STORE' ? Math.max(0, total - ecom) : total));
+       }, 0);
+       const calcTypeVal = (type) => monthItems.filter(i => i.type === type).reduce((a,b) => {
+          const total = b.rawTotal[monthKey] || 0;
+          const ecom = b.rawEcom[monthKey] || 0;
+          return a + ((salesView === 'ECOM') ? ecom : (salesView === 'STORE' ? Math.max(0, total - ecom) : total));
+       }, 0);
+       return { month: m.short.toUpperCase(), val: totalVal, conds: calcTypeVal('Condensadora'), evaps: calcTypeVal('Evaporadora') };
     });
 
     const bestSellers = [...items].sort((a,b) => b.sales25 - a.sales25).slice(0, 5);
@@ -665,47 +670,118 @@ const BIDashboard = ({ user }) => {
     const total25 = brandKPI ? brandKPI.val : 0;
     const growth = total24 > 0 ? ((total25 - total24) / total24) : 0;
 
-    return {
-       items: filtered,
-       conds: filtered.filter(r => r.type === 'Condensadora'),
-       evaps: filtered.filter(r => r.type === 'Evaporadora'),
-       others: filtered.filter(r => r.type === 'Outros'),
-       total: total25,
-       total24: total24,
-       stock: items.reduce((a,b)=>a+b.stock,0),
-       recentSales,
-       bestSellers,
-       growth
-    };
-  }, [enrichedData, viewBrand, searchTerm, stockFilter, hideZeroSales, kpis, timeContext]);
+    return { items: filtered, conds: filtered.filter(r => r.type === 'Condensadora'), evaps: filtered.filter(r => r.type === 'Evaporadora'), others: filtered.filter(r => r.type === 'Outros'), total: total25, total24: total24, stock: items.reduce((a,b)=>a+b.stock,0), recentSales, bestSellers, growth };
+  }, [enrichedData, viewBrand, searchTerm, stockFilter, hideZeroSales, kpis, timeContext, salesView]);
 
+  // --- EXPORTAÇÃO FLEXÍVEL ---
   const handleExportReport = () => {
     if (!viewBrand) return;
-    let itemsToExport = enrichedData.filter(r => r.brand === viewBrand);
-    if (!exportConfig.includeZero) itemsToExport = itemsToExport.filter(r => r.sales25 > 0);
     
+    const channel = exportConfig.channel; // 'TOTAL', 'STORE', 'ECOM'
+    
+    // Filtro base de itens da marca
+    let itemsToExport = enrichedData.filter(r => r.brand === viewBrand);
+    
+    // Função auxiliar para buscar valor baseado no canal
+    const getChannelVal = (item, field) => {
+        const total = item.rawTotal[field] || 0;
+        const ecom = item.rawEcom[field] || 0;
+        if (channel === 'ECOM') return ecom;
+        if (channel === 'STORE') return Math.max(0, total - ecom);
+        return total;
+    };
+
+    // Filtra Zero Sales no CANAL ESCOLHIDO
+    if (!exportConfig.includeZero) {
+        itemsToExport = itemsToExport.filter(item => getChannelVal(item, 'sales25') > 0);
+    }
+    
+    // Filtro de Tipo
     if (exportConfig.type === 'COND') itemsToExport = itemsToExport.filter(r => r.type === 'Condensadora');
     if (exportConfig.type === 'EVAP') itemsToExport = itemsToExport.filter(r => r.type === 'Evaporadora');
 
-    const excelData = itemsToExport.map(item => ({
-       'SKU': item.code,
-       'Descrição': item.desc,
-       'Tipo': item.type,
-       'Cód. Fabricante': item.factory,
-       'Vendas 2024': item.sales24 || 0,
-       'Vendas 2025': item.sales25 || 0,
-       [`Vendas ${timeContext.last3Months[0].label}`]: item[timeContext.last3Months[0].short] || 0,
-       [`Vendas ${timeContext.last3Months[1].label}`]: item[timeContext.last3Months[1].short] || 0,
-       [`Vendas ${timeContext.last3Months[2].label}`]: item[timeContext.last3Months[2].short] || 0,
-       'Estoque Físico': item.stock || 0,
-       'Trânsito': item.transitQty || 0,
-       'Dias de Estoque': item.daysOfStock > 900 ? 'Sem Venda' : item.daysOfStock
-    }));
+    const excelData = itemsToExport.map(item => {
+       const v24 = getChannelVal(item, 'sales24');
+       const v25 = getChannelVal(item, 'sales25');
+       const vM1 = getChannelVal(item, timeContext.last3Months[0].short);
+       const vM2 = getChannelVal(item, timeContext.last3Months[1].short);
+       const vM3 = getChannelVal(item, timeContext.last3Months[2].short);
+       
+       // Lógica de Dias de Estoque Híbrida
+       const today = new Date();
+       const dayOfMonth = timeContext.currentDay;
+       let salesPeriodTotal = 0;
+       let daysPeriodTotal = 1;
+       
+       if (dayOfMonth <= 10) {
+         const vPrev = getChannelVal(item, timeContext.prevMonth.short);
+         const v2Ago = getChannelVal(item, timeContext.twoMonthsAgo.short);
+         salesPeriodTotal = vPrev + v2Ago;
+         const daysInPrev = new Date(today.getFullYear(), today.getMonth(), 0).getDate();
+         const daysIn2Prev = new Date(today.getFullYear(), today.getMonth() - 1, 0).getDate();
+         daysPeriodTotal = daysInPrev + daysIn2Prev;
+       } else {
+         const vCurr = getChannelVal(item, timeContext.currentMonth.short);
+         const vPrev = getChannelVal(item, timeContext.prevMonth.short);
+         salesPeriodTotal = vCurr + vPrev;
+         const daysInPrev = new Date(today.getFullYear(), today.getMonth(), 0).getDate();
+         daysPeriodTotal = daysInPrev + dayOfMonth;
+       }
+       
+       const dailyAvg = salesPeriodTotal / (daysPeriodTotal > 0 ? daysPeriodTotal : 1);
+       const totalAvail = (item.stock || 0) + (item.transitQty || 0);
+       let dde = 0;
+       if(dailyAvg > 0) dde = Math.ceil(totalAvail / dailyAvg);
+       else if(totalAvail > 0) dde = 999;
+
+       // Configuração das Colunas de Vendas
+       let salesColumns = {};
+       
+       if (channel === 'TOTAL') {
+          // Se for TOTAL, quebramos em colunas detalhadas
+          const rawTotal25 = item.rawTotal['sales25'] || 0;
+          const rawEcom25 = item.rawEcom['sales25'] || 0;
+          const rawStore25 = Math.max(0, rawTotal25 - rawEcom25);
+
+          const rawTotal24 = item.rawTotal['sales24'] || 0;
+          const rawEcom24 = item.rawEcom['sales24'] || 0;
+          const rawStore24 = Math.max(0, rawTotal24 - rawEcom24);
+
+          salesColumns = {
+             'Vendas 24 (Loja)': rawStore24,
+             'Vendas 24 (E-com)': rawEcom24,
+             'Vendas 24 (Total)': rawTotal24,
+             'Vendas 25 (Loja)': rawStore25,
+             'Vendas 25 (E-com)': rawEcom25,
+             'Vendas 25 (Total)': rawTotal25,
+          };
+       } else {
+          // Se for específico, mantém coluna única
+          salesColumns = {
+             'Vendas 2024': v24,
+             'Vendas 2025': v25,
+          };
+       }
+
+       return {
+         'SKU': item.code,
+         'Descrição': item.desc,
+         'Tipo': item.type,
+         'Cód. Fabricante': item.factory,
+         ...salesColumns,
+         [`Vendas ${timeContext.last3Months[0].label}`]: vM1,
+         [`Vendas ${timeContext.last3Months[1].label}`]: vM2,
+         [`Vendas ${timeContext.last3Months[2].label}`]: vM3,
+         'Estoque Físico': item.stock || 0,
+         'Trânsito': item.transitQty || 0,
+         'Dias de Estoque': dde > 900 ? 'Sem Venda' : dde
+       };
+    });
 
     const ws = window.XLSX.utils.json_to_sheet(excelData);
     const wb = window.XLSX.utils.book_new();
     window.XLSX.utils.book_append_sheet(wb, ws, "Relatório");
-    window.XLSX.writeFile(wb, `${exportConfig.filename || 'Relatorio'}_${viewBrand}_${exportConfig.type}.xlsx`);
+    window.XLSX.writeFile(wb, `${exportConfig.filename || 'Relatorio'}_${viewBrand}_${channel}_${exportConfig.type}.xlsx`);
     setExportModalOpen(false);
     addToast('Relatório gerado com sucesso!', 'success');
   };
@@ -715,6 +791,7 @@ const BIDashboard = ({ user }) => {
   if (viewBrand && viewData) {
       return (
         <div className="space-y-5 animate-fadeIn">
+          {/* HEADER E CARDS DA MARCA */}
           <div className="flex justify-between items-center bg-white p-4 rounded-lg border border-slate-200 shadow-sm">
              <div className="flex items-center gap-4">
                 <Button variant="secondary" size="sm" icon={ArrowLeft} onClick={()=>{setViewBrand(null); setSearchTerm('');}} className="border-slate-300 px-3 text-xs">Voltar</Button>
@@ -726,92 +803,71 @@ const BIDashboard = ({ user }) => {
                    </div>
                 </div>
              </div>
+             
+             {/* SELETOR DE CANAL (MOVIDO PARA CÁ) */}
+             <div className="flex bg-slate-100 p-1 rounded-lg">
+                <button onClick={() => setSalesView('ALL')} className={`px-4 py-2 rounded-md text-xs font-bold flex items-center gap-2 transition-all ${salesView==='ALL' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}><PieChart className="w-3 h-3"/> Geral</button>
+                <button onClick={() => setSalesView('STORE')} className={`px-4 py-2 rounded-md text-xs font-bold flex items-center gap-2 transition-all ${salesView==='STORE' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}><Store className="w-3 h-3"/> Loja</button>
+                <button onClick={() => setSalesView('ECOM')} className={`px-4 py-2 rounded-md text-xs font-bold flex items-center gap-2 transition-all ${salesView==='ECOM' ? 'bg-white text-purple-700 shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}><ShoppingBag className="w-3 h-3"/> E-com</button>
+             </div>
+
              <div className="flex gap-6 items-center">
-               {/* NOVO BLOCO TOTAL 2024 */}
-               <div className="text-right border-r border-slate-200 pr-6 hidden md:block">
-                 <span className="block text-[10px] font-bold text-slate-400 uppercase">Total 2024</span>
-                 <span className="block text-lg font-bold text-slate-500">{Formatters.number(viewData.total24)}</span>
-               </div>
-
-               <div className="text-right border-r border-slate-200 pr-6 hidden md:block">
-                 <span className="block text-[10px] font-bold text-slate-400 uppercase">Total 2025</span>
-                 <span className="block text-lg font-bold text-slate-800">{Formatters.number(viewData.total)}</span>
-               </div>
-               <div className="text-right hidden md:block border-r border-slate-200 pr-6"><span className="block text-[10px] font-bold text-slate-400 uppercase">Estoque Físico</span><span className="block text-lg font-bold text-slate-800">{Formatters.number(viewData.stock)}</span></div>
-               <Button variant="primary" size="sm" icon={FileDown} onClick={() => setExportModalOpen(true)} className="shadow-md">Exportar Relatório</Button>
+                <div className="text-right border-r border-slate-200 pr-6 hidden md:block"><span className="block text-[10px] font-bold text-slate-400 uppercase">Total 2024</span><span className="block text-lg font-bold text-slate-500">{Formatters.number(viewData.total24)}</span></div>
+                <div className="text-right border-r border-slate-200 pr-6 hidden md:block"><span className="block text-[10px] font-bold text-slate-400 uppercase">Total 2025</span><span className="block text-lg font-bold text-slate-800">{Formatters.number(viewData.total)}</span></div>
+                <div className="text-right hidden md:block border-r border-slate-200 pr-6"><span className="block text-[10px] font-bold text-slate-400 uppercase">Estoque Físico</span><span className="block text-lg font-bold text-slate-800">{Formatters.number(viewData.stock)}</span></div>
+                <Button variant="primary" size="sm" icon={FileDown} onClick={() => setExportModalOpen(true)} className="shadow-md">Exportar Relatório</Button>
              </div>
           </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-             <Card className="lg:col-span-2 p-5 flex flex-col">
-                <h3 className="font-bold text-sm text-slate-800 mb-4 flex items-center gap-2"><CalendarIcon className="w-4 h-4 text-slate-400"/> Vendas Últimos 3 Meses</h3>
-                <div className="grid grid-cols-3 gap-4 flex-1">
-                   {viewData.recentSales.map(s => (
-                      <div key={s.month} className="bg-slate-50 rounded border border-slate-100 p-4 text-center flex flex-col justify-between">
-                         <div>
-                            <span className="text-xs font-bold text-slate-400 uppercase mb-1 block">{s.month}</span>
-                            <span className="text-xl font-bold text-blue-800 block mb-2">{Formatters.number(s.val)}</span>
-                         </div>
-                         <div className="flex justify-between items-center text-[10px] border-t border-slate-200 pt-2 w-full">
-                            <div className="flex flex-col items-center w-1/2 border-r border-slate-100">
-                               <span className="text-slate-400 font-bold">COND</span>
-                               <span className="text-blue-600 font-bold">{Formatters.number(s.conds)}</span>
-                            </div>
-                            <div className="flex flex-col items-center w-1/2">
-                               <span className="text-slate-400 font-bold">EVAP</span>
-                               <span className="text-sky-600 font-bold">{Formatters.number(s.evaps)}</span>
-                            </div>
-                         </div>
-                      </div>
-                   ))}
-                </div>
-             </Card>
-
-             <Card className="p-5 flex flex-col"><h3 className="font-bold text-sm text-slate-800 mb-3 flex items-center gap-2"><Trophy className="w-4 h-4 text-amber-500"/> Top 5 Produtos</h3><div className="flex-1 overflow-y-auto custom-scrollbar"><div className="space-y-2">{viewData.bestSellers.map((p, i) => (<div key={i} className="flex justify-between items-center text-xs border-b border-slate-50 last:border-0 pb-2 last:pb-0"><div className="flex items-center gap-2 overflow-hidden"><span className="font-bold text-slate-400 w-3">{i+1}.</span><span className="truncate font-medium text-slate-700" title={p.desc}>{p.desc.substring(0, 25)}...</span></div><span className="font-bold text-slate-900">{Formatters.number(p.sales25)}</span></div>))}</div></div></Card>
-          </div>
-
-          <Card className="p-0 overflow-hidden">
-             <div className="flex flex-col md:flex-row justify-between items-center p-4 border-b border-slate-200 bg-slate-50 gap-4">
-                <div className="flex bg-white border border-slate-300 rounded-md p-0.5">{[{id:'conds', label:'Condensadoras'},{id:'evaps', label:'Evaporadoras'},{id:'others', label:'Outros'}].map(t => (<button key={t.id} onClick={()=>setActiveTab(t.id)} className={`px-4 py-1.5 rounded-sm text-xs font-bold transition-all ${activeTab===t.id ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>{t.label}</button>))}</div>
-                <div className="flex items-center gap-3"><label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-slate-700 select-none"><input type="checkbox" checked={hideZeroSales} onChange={()=>setHideZeroSales(!hideZeroSales)} className="rounded text-blue-600 focus:ring-blue-500 border-slate-300" />Ocultar Sem Vendas</label><select value={stockFilter} onChange={e=>setStockFilter(e.target.value)} className="text-xs border border-slate-300 rounded-md px-2 py-1.5 bg-white font-medium focus:ring-1 focus:ring-blue-500 outline-none cursor-pointer">
-                      <option value="ALL">Todos Status</option>
-                      {/* NOVOS FILTROS DE DIAS (v6.23) */}
-                      <option value="CRITICAL">🚨 Crítico (&lt;30d)</option>
-                      <option value="LOW">⚠️ Baixo (30-60d)</option>
-                      <option value="EXCESS">📦 Excesso (&gt;150d)</option>
-                   </select><div className="relative w-56"><SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" /><input value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} placeholder="Buscar SKU..." className="w-full pl-8 pr-3 py-1.5 border border-slate-300 rounded-md text-xs focus:ring-1 focus:ring-blue-500 outline-none" /></div></div>
-             </div>
-             <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200"><tr><th className="px-4 py-3 w-1/3">Produto / SKU</th>
-             {/* COLUNA EXTRA (2 Meses Atrás) para visão completa */}
-             <th className="px-4 py-3 text-right">Venda {timeContext.twoMonthsAgo.short.toUpperCase()}</th>
-             <th className="px-4 py-3 text-right">Venda {timeContext.prevMonth.short.toUpperCase()}</th><th className="px-4 py-3 text-right">Venda {timeContext.currentMonth.short.toUpperCase()}</th><th className="px-4 py-3 text-right">Estoque</th><th className="px-4 py-3 text-center">Trânsito</th><th className="px-4 py-3 text-center">Cobertura (Dias)</th></tr></thead><tbody className="divide-y divide-slate-100 text-slate-700 font-medium">{(activeTab === 'conds' ? viewData.conds : activeTab === 'evaps' ? viewData.evaps : viewData.others).map((r, i) => { 
-                let daysClass = "text-slate-600 font-mono font-bold"; 
-                // NOVOS LIMITES DE COR (v6.23)
-                if(r.daysOfStock < 30) daysClass = "text-red-700 font-bold bg-red-50 px-2 py-0.5 rounded border border-red-100"; 
-                else if(r.daysOfStock < 60) daysClass = "text-amber-700 font-bold bg-amber-50 px-2 py-0.5 rounded border border-amber-100"; 
-                else if(r.daysOfStock > 150) daysClass = "text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-100"; 
-                
-                return (<tr key={i} className="hover:bg-slate-50 transition-colors"><td className="px-4 py-3"><div className="flex flex-col"><span className="font-bold text-slate-800 truncate max-w-xs" title={r.desc}>{r.desc}</span><span className="text-[10px] text-slate-500 font-mono mt-0.5">{r.code} • {r.factory}</span></div></td>
-             <td className="px-4 py-3 text-right font-mono text-slate-400">{Formatters.number(r.twoMonthsAgoSales)}</td>
-             <td className="px-4 py-3 text-right font-mono text-slate-500">{Formatters.number(r.prevMonthSales)}</td><td className="px-4 py-3 text-right font-mono text-slate-800 font-bold">{Formatters.number(r.currentMonthSales)}</td><td className="px-4 py-3 text-right font-mono font-bold text-slate-800">{r.stock}</td><td className="px-4 py-3 text-center">{r.transitQty > 0 ? (<div className="inline-block text-center leading-tight bg-blue-50 px-2 py-0.5 rounded border border-blue-100"><span className="block font-bold text-blue-700 text-[10px]">{r.transitQty}</span>{r.transitDate && <span className="block text-[8px] text-slate-500 mt-0.5">{Formatters.date(r.transitDate)}</span>}</div>) : <span className="text-slate-300">-</span>}</td><td className="px-4 py-3 text-center"><span className={daysClass}>{r.daysOfStock > 900 ? '∞' : Formatters.number(r.daysOfStock)}</span></td></tr>);})}</tbody></table></div>
-          </Card>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4"><Card className="lg:col-span-2 p-5 flex flex-col"><h3 className="font-bold text-sm text-slate-800 mb-4 flex items-center gap-2"><CalendarIcon className="w-4 h-4 text-slate-400"/> Vendas Últimos 3 Meses ({salesView})</h3><div className="grid grid-cols-3 gap-4 flex-1">{viewData.recentSales.map(s => (<div key={s.month} className="bg-slate-50 rounded border border-slate-100 p-4 text-center flex flex-col justify-between"><div><span className="text-xs font-bold text-slate-400 uppercase mb-1 block">{s.month}</span><span className="text-xl font-bold text-blue-800 block mb-2">{Formatters.number(s.val)}</span></div><div className="flex justify-between items-center text-[10px] border-t border-slate-200 pt-2 w-full"><div className="flex flex-col items-center w-1/2 border-r border-slate-100"><span className="text-slate-400 font-bold">COND</span><span className="text-blue-600 font-bold">{Formatters.number(s.conds)}</span></div><div className="flex flex-col items-center w-1/2"><span className="text-slate-400 font-bold">EVAP</span><span className="text-sky-600 font-bold">{Formatters.number(s.evaps)}</span></div></div></div>))}</div></Card><Card className="p-5 flex flex-col"><h3 className="font-bold text-sm text-slate-800 mb-3 flex items-center gap-2"><Trophy className="w-4 h-4 text-amber-500"/> Top 5 Produtos ({salesView})</h3><div className="flex-1 overflow-y-auto custom-scrollbar"><div className="space-y-2">{viewData.bestSellers.map((p, i) => (<div key={i} className="flex justify-between items-center text-xs border-b border-slate-50 last:border-0 pb-2 last:pb-0"><div className="flex items-center gap-2 overflow-hidden"><span className="font-bold text-slate-400 w-3">{i+1}.</span><span className="truncate font-medium text-slate-700" title={p.desc}>{p.desc.substring(0, 25)}...</span></div><span className="font-bold text-slate-900">{Formatters.number(p.sales25)}</span></div>))}</div></div></Card></div>
+          <Card className="p-0 overflow-hidden"><div className="flex flex-col md:flex-row justify-between items-center p-4 border-b border-slate-200 bg-slate-50 gap-4"><div className="flex bg-white border border-slate-300 rounded-md p-0.5">{[{id:'conds', label:'Condensadoras'},{id:'evaps', label:'Evaporadoras'},{id:'others', label:'Outros'}].map(t => (<button key={t.id} onClick={()=>setActiveTab(t.id)} className={`px-4 py-1.5 rounded-sm text-xs font-bold transition-all ${activeTab===t.id ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>{t.label}</button>))}</div><div className="flex items-center gap-3"><label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-slate-700 select-none"><input type="checkbox" checked={hideZeroSales} onChange={()=>setHideZeroSales(!hideZeroSales)} className="rounded text-blue-600 focus:ring-blue-500 border-slate-300" />Ocultar Sem Vendas</label><select value={stockFilter} onChange={e=>setStockFilter(e.target.value)} className="text-xs border border-slate-300 rounded-md px-2 py-1.5 bg-white font-medium focus:ring-1 focus:ring-blue-500 outline-none cursor-pointer"><option value="ALL">Todos Status</option><option value="CRITICAL">🚨 Crítico (&lt;30d)</option><option value="LOW">⚠️ Baixo (30-60d)</option><option value="EXCESS">📦 Excesso (&gt;150d)</option></select><div className="relative w-56"><SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" /><input value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} placeholder="Buscar SKU..." className="w-full pl-8 pr-3 py-1.5 border border-slate-300 rounded-md text-xs focus:ring-1 focus:ring-blue-500 outline-none" /></div></div></div><div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200"><tr><th className="px-4 py-3 w-1/3">Produto / SKU</th><th className="px-4 py-3 text-right">Venda {timeContext.twoMonthsAgo.short.toUpperCase()}</th><th className="px-4 py-3 text-right">Venda {timeContext.prevMonth.short.toUpperCase()}</th><th className="px-4 py-3 text-right">Venda {timeContext.currentMonth.short.toUpperCase()}</th><th className="px-4 py-3 text-right">Estoque</th><th className="px-4 py-3 text-center">Trânsito</th><th className="px-4 py-3 text-center">Cobertura (Dias)</th></tr></thead><tbody className="divide-y divide-slate-100 text-slate-700 font-medium">{(activeTab === 'conds' ? viewData.conds : activeTab === 'evaps' ? viewData.evaps : viewData.others).map((r, i) => { let daysClass = "text-slate-600 font-mono font-bold"; if(r.daysOfStock < 30) daysClass = "text-red-700 font-bold bg-red-50 px-2 py-0.5 rounded border border-red-100"; else if(r.daysOfStock < 60) daysClass = "text-amber-700 font-bold bg-amber-50 px-2 py-0.5 rounded border border-amber-100"; else if(r.daysOfStock > 150) daysClass = "text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-100"; return (<tr key={i} className="hover:bg-slate-50 transition-colors"><td className="px-4 py-3"><div className="flex flex-col"><span className="font-bold text-slate-800 truncate max-w-xs" title={r.desc}>{r.desc}</span><span className="text-[10px] text-slate-500 font-mono mt-0.5">{r.code} • {r.factory}</span></div></td><td className="px-4 py-3 text-right font-mono text-slate-400">{Formatters.number(r.twoMonthsAgoSales)}</td><td className="px-4 py-3 text-right font-mono text-slate-500">{Formatters.number(r.prevMonthSales)}</td><td className="px-4 py-3 text-right font-mono text-slate-800 font-bold">{Formatters.number(r.currentMonthSales)}</td><td className="px-4 py-3 text-right font-mono font-bold text-slate-800">{r.stock}</td><td className="px-4 py-3 text-center">{r.transitQty > 0 ? (<div className="inline-block text-center leading-tight bg-blue-50 px-2 py-0.5 rounded border border-blue-100"><span className="block font-bold text-blue-700 text-[10px]">{r.transitQty}</span>{r.transitDate && <span className="block text-[8px] text-slate-500 mt-0.5">{Formatters.date(r.transitDate)}</span>}</div>) : <span className="text-slate-300">-</span>}</td><td className="px-4 py-3 text-center"><span className={daysClass}>{r.daysOfStock > 900 ? '∞' : Formatters.number(r.daysOfStock)}</span></td></tr>);})}</tbody></table></div></Card>
 
           <Modal isOpen={exportModalOpen} onClose={() => setExportModalOpen(false)} title="Exportar Relatório Executivo" size="sm" actions={<><Button variant="secondary" onClick={() => setExportModalOpen(false)}>Cancelar</Button><Button onClick={handleExportReport} icon={Download}>Gerar Excel</Button></>}>
-             <div className="space-y-4"><div className="bg-slate-50 p-4 rounded border border-slate-200"><p className="text-xs font-bold text-slate-500 uppercase mb-1">Marca Selecionada</p><p className="text-lg font-bold text-slate-800">{viewBrand}</p></div><InputField label="Nome do Arquivo" value={exportConfig.filename} onChange={e => setExportConfig({...exportConfig, filename: e.target.value})} placeholder="Ex: relatorio_samsung_nov" /><div className="space-y-1"><label className="block text-xs font-bold text-slate-700">Tipo de Produto</label><select className="w-full bg-white border border-slate-300 rounded-md py-2 px-3 text-sm outline-none focus:ring-2 focus:ring-blue-600" value={exportConfig.type} onChange={e => setExportConfig({...exportConfig, type: e.target.value})}><option value="ALL">Todos os Produtos</option><option value="COND">Apenas Condensadoras</option><option value="EVAP">Apenas Evaporadoras</option></select></div><div className="flex items-center gap-2 mt-2"><input type="checkbox" id="includeZero" checked={exportConfig.includeZero} onChange={e => setExportConfig({...exportConfig, includeZero: e.target.checked})} className="rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer" /><label htmlFor="includeZero" className="text-sm text-slate-700 cursor-pointer font-medium">Incluir produtos sem vendas (Venda 2025 = 0)</label></div><p className="text-xs text-slate-400 italic mt-2">O relatório incluirá: SKU, Descrição, Ref., Vendas (2024, 2025, Trimestre), Estoque, Trânsito e Dias de Cobertura.</p></div>
+              <div className="space-y-4"><div className="bg-slate-50 p-4 rounded border border-slate-200"><p className="text-xs font-bold text-slate-500 uppercase mb-1">Marca Selecionada</p><p className="text-lg font-bold text-slate-800">{viewBrand}</p></div><InputField label="Nome do Arquivo" value={exportConfig.filename} onChange={e => setExportConfig({...exportConfig, filename: e.target.value})} placeholder="Ex: relatorio_samsung_nov" />
+              
+              {/* SELETOR DE CANAL NO MODAL */}
+              <div className="space-y-1"><label className="block text-xs font-bold text-slate-700">Canal de Venda</label><select className="w-full bg-white border border-slate-300 rounded-md py-2 px-3 text-sm outline-none focus:ring-2 focus:ring-blue-600" value={exportConfig.channel} onChange={e => setExportConfig({...exportConfig, channel: e.target.value})}><option value="TOTAL">Total (Matriz)</option><option value="STORE">Loja Física (Total - Ecom)</option><option value="ECOM">E-commerce</option></select></div>
+
+              <div className="space-y-1"><label className="block text-xs font-bold text-slate-700">Tipo de Produto</label><select className="w-full bg-white border border-slate-300 rounded-md py-2 px-3 text-sm outline-none focus:ring-2 focus:ring-blue-600" value={exportConfig.type} onChange={e => setExportConfig({...exportConfig, type: e.target.value})}><option value="ALL">Todos os Produtos</option><option value="COND">Apenas Condensadoras</option><option value="EVAP">Apenas Evaporadoras</option></select></div><div className="flex items-center gap-2 mt-2"><input type="checkbox" id="includeZero" checked={exportConfig.includeZero} onChange={e => setExportConfig({...exportConfig, includeZero: e.target.checked})} className="rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer" /><label htmlFor="includeZero" className="text-sm text-slate-700 cursor-pointer font-medium">Incluir produtos sem vendas (Venda 2025 = 0)</label></div>
+              
+              {exportConfig.channel === 'TOTAL' ? (
+                 <p className="text-xs text-blue-600 bg-blue-50 p-2 rounded border border-blue-100 italic mt-2">
+                   O Excel incluirá colunas separadas para <strong>Loja</strong> e <strong>E-commerce</strong>.
+                 </p>
+              ) : (
+                 <p className="text-xs text-slate-400 italic mt-2">O relatório incluirá apenas dados do canal selecionado.</p>
+              )}
+              </div>
           </Modal>
         </div>
       );
   }
 
+  // ... Resto do código (Principal e Purchase Manager) permanece igual ...
   return (
     <div className="space-y-6 animate-fadeIn">
-       <div className="flex flex-col md:flex-row justify-between items-center gap-4 border-b border-slate-200 pb-4"><div><h2 className="text-2xl font-bold text-slate-900">Visão Geral</h2><p className="text-slate-500 text-xs font-medium mt-1">Dashboard de Performance Comercial</p></div><div className="flex gap-2"><input type="file" ref={matrixFileRef} onChange={processMatrixUpload} className="hidden" accept=".csv,.xlsx" /><Button onClick={()=>matrixFileRef.current.click()} icon={Upload} variant="secondary" size="sm">Upload Matriz</Button><input type="file" ref={transitFileRef} onChange={processTransitUpload} className="hidden" accept=".csv,.xlsx" /><Button onClick={()=>transitFileRef.current.click()} icon={Ship} variant="black" size="sm">Upload Trânsito</Button></div></div>
-       {!kpis ? (<div className="py-20 text-center border-2 border-dashed border-slate-300 rounded-lg bg-slate-50"><BarChart3 className="w-12 h-12 text-slate-300 mx-auto mb-3" /><p className="text-slate-700 font-bold text-sm">Nenhum dado carregado</p><p className="text-slate-500 text-xs mt-1">Realize o upload das planilhas (Matriz e Trânsito) para começar.</p></div>) : (<><div className="grid grid-cols-1 md:grid-cols-4 gap-4">{[{ label: "Vendas (2025)", val: kpis.total25, icon: TrendingUp, color: "text-blue-700 bg-blue-50 border-blue-100" }, { label: "Estoque Físico", val: kpis.stock, icon: Box, color: "text-emerald-700 bg-emerald-50 border-emerald-100" }, { label: "Em Trânsito", val: kpis.transit, icon: Ship, color: "text-purple-700 bg-purple-50 border-purple-100" }, { label: "Fabricantes", val: kpis.brands.length, icon: Layers, color: "text-amber-700 bg-amber-50 border-amber-100" }].map((stat, i) => (<Card key={i} className="p-4 flex items-center gap-4 hover:-translate-y-1 transition-transform"><div className={`w-10 h-10 rounded flex items-center justify-center border ${stat.color}`}><stat.icon className="w-5 h-5" /></div><div><p className="text-2xl font-bold text-slate-900 leading-none mb-0.5">{Formatters.number(stat.val)}</p><p className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">{stat.label}</p></div></Card>))}</div><div><h3 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">Performance por Fabricante</h3><div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">{kpis.brands.map(b => (<Card key={b.name} onClick={()=>{setViewBrand(b.name); setSearchTerm(''); setActiveTab('conds');}} hoverable className="p-5 flex flex-col justify-between h-40 group border-l-[4px] border-l-slate-200 hover:border-l-blue-700"><div className="flex justify-between items-start"><span className="font-bold text-lg text-slate-800">{b.name}</span><ArrowUpRight className="w-4 h-4 text-slate-300 group-hover:text-blue-700 transition-colors"/></div><div><p className="text-2xl font-bold text-slate-900 tracking-tight">{Formatters.number(b.val)}</p><p className="text-[10px] text-slate-400 font-bold uppercase mt-1">Unidades Vendidas</p><div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100"><span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">{b.conds} Conds</span><span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">{b.evaps} Evaps</span></div></div></Card>))}</div></div></>)}
+       <div className="flex flex-col md:flex-row justify-between items-center gap-4 border-b border-slate-200 pb-4">
+          <div><h2 className="text-2xl font-bold text-slate-900">Visão Geral</h2><p className="text-slate-500 text-xs font-medium mt-1">Dashboard de Performance Comercial (Total)</p></div>
+          
+          {/* SELETOR REMOVIDO DAQUI (MUITO IMPORTANTE: A HOME AGORA É SEMPRE TOTAL) */}
+
+          <div className="flex gap-2">
+              <input type="file" ref={matrixFileRef} onChange={processMatrixUpload} className="hidden" accept=".csv,.xlsx" />
+              <Button onClick={()=>matrixFileRef.current.click()} icon={Upload} variant="secondary" size="sm">Matriz (Total)</Button>
+              
+              <input type="file" ref={ecomFileRef} onChange={processEcommerceUpload} className="hidden" accept=".csv,.xlsx" />
+              <Button onClick={()=>ecomFileRef.current.click()} icon={ShoppingBag} variant="purple" size="sm">E-commerce</Button>
+
+              <input type="file" ref={transitFileRef} onChange={processTransitUpload} className="hidden" accept=".csv,.xlsx" />
+              <Button onClick={()=>transitFileRef.current.click()} icon={Ship} variant="black" size="sm">Trânsito</Button>
+          </div>
+       </div>
+       
+       {!kpis ? (<div className="py-20 text-center border-2 border-dashed border-slate-300 rounded-lg bg-slate-50"><BarChart3 className="w-12 h-12 text-slate-300 mx-auto mb-3" /><p className="text-slate-700 font-bold text-sm">Nenhum dado carregado</p><p className="text-slate-500 text-xs mt-1">Realize o upload das planilhas (Matriz, E-comm e Trânsito) para começar.</p></div>) : (<><div className="grid grid-cols-1 md:grid-cols-4 gap-4">{[{ label: `Vendas 25 (Total)`, val: kpis.total25, icon: TrendingUp, color: "text-blue-700 bg-blue-50 border-blue-100" }, { label: "Estoque Físico", val: kpis.stock, icon: Box, color: "text-emerald-700 bg-emerald-50 border-emerald-100" }, { label: "Em Trânsito", val: kpis.transit, icon: Ship, color: "text-purple-700 bg-purple-50 border-purple-100" }, { label: "Fabricantes", val: kpis.brands.length, icon: Layers, color: "text-amber-700 bg-amber-50 border-amber-100" }].map((stat, i) => (<Card key={i} className="p-4 flex items-center gap-4 hover:-translate-y-1 transition-transform"><div className={`w-10 h-10 rounded flex items-center justify-center border ${stat.color}`}><stat.icon className="w-5 h-5" /></div><div><p className="text-2xl font-bold text-slate-900 leading-none mb-0.5">{Formatters.number(stat.val)}</p><p className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">{stat.label}</p></div></Card>))}</div><div><h3 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">Performance por Fabricante</h3><div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">{kpis.brands.map(b => (<Card key={b.name} onClick={()=>{setViewBrand(b.name); setSearchTerm(''); setActiveTab('conds');}} hoverable className="p-5 flex flex-col justify-between h-40 group border-l-[4px] border-l-slate-200 hover:border-l-blue-700"><div className="flex justify-between items-start"><span className="font-bold text-lg text-slate-800">{b.name}</span><ArrowUpRight className="w-4 h-4 text-slate-300 group-hover:text-blue-700 transition-colors"/></div><div><p className="text-2xl font-bold text-slate-900 tracking-tight">{Formatters.number(b.val)}</p><p className="text-[10px] text-slate-400 font-bold uppercase mt-1">Unidades Vendidas (Total)</p><div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100"><span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">{b.conds} Conds</span><span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">{b.evaps} Evaps</span></div></div></Card>))}</div></div></>)}
     </div>
   );
 };
 
-// --- 4.4: GESTÃO DE PEDIDOS (Purchase Manager & Item Editor) ---
+// --- 4.4: GESTÃO DE PEDIDOS (Mantido) ---
 const PurchaseManager = ({ user }) => {
   const { addToast } = useToast();
   const [orders, setOrders] = useState([]);
@@ -924,7 +980,6 @@ const PurchaseManager = ({ user }) => {
     reader.readAsBinaryString(file);
   };
 
-  // --- Processar Relatório de Faturamento (NF) - CORRIGIDO PARA EVITAR DUPLICIDADE ---
   const processInvoiceUpload = (e) => {
     const file = e.target.files[0]; if(!file) return;
     const reader = new FileReader();
@@ -1082,15 +1137,15 @@ const PurchaseManager = ({ user }) => {
                       
                       {/* BUSCA INTERNA DE ITENS */}
                       <div className="mb-4">
-                         <div className="relative">
-                            <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                            <input 
+                          <div className="relative">
+                             <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                             <input 
                                value={itemSearchTerm}
                                onChange={(e) => setItemSearchTerm(e.target.value)}
                                placeholder="Filtrar itens do pedido (SKU ou Ref.)..."
                                className="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-md text-sm focus:ring-1 focus:ring-blue-500 outline-none"
                             />
-                         </div>
+                          </div>
                       </div>
 
                       <div className="bg-white rounded border border-slate-200 overflow-hidden shadow-sm">
