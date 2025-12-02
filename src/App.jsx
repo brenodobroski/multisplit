@@ -9,9 +9,10 @@
  * - O seletor de visão (Geral/Loja/E-com) foi movido da home para dentro da visão
  * de cada marca.
  * - A página inicial sempre reseta para a visão "TOTAL" automaticamente.
- * 3. ESTOQUE DETALHADO (NOVO):
- * - Adicionado detalhamento de estoque (Condensadoras vs Evaporadoras) no header
- * da visão por marca.
+ * 3. ESTOQUE DETALHADO:
+ * - Adicionado detalhamento de estoque (Condensadoras vs Evaporadoras) no header.
+ * 4. BUSCA MELHORADA (PEDIDOS):
+ * - Agora é possível buscar produtos pela DESCRIÇÃO dentro dos pedidos de compra.
  * ==================================================================================
  */
 
@@ -1167,7 +1168,7 @@ const PurchaseManager = ({ user }) => {
                              <input 
                                value={itemSearchTerm}
                                onChange={(e) => setItemSearchTerm(e.target.value)}
-                               placeholder="Filtrar itens do pedido (SKU ou Ref.)..."
+                               placeholder="Filtrar itens do pedido (SKU, Ref. ou Descrição)..."
                                className="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-md text-sm focus:ring-1 focus:ring-blue-500 outline-none"
                             />
                           </div>
@@ -1177,7 +1178,12 @@ const PurchaseManager = ({ user }) => {
                         <table className="w-full text-left text-xs">
                            <thead className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200"><tr><th className="px-4 py-2">Item / SKU</th><th className="px-4 py-2 text-center">Qtd</th><th className="px-4 py-2 text-center">Faturado</th><th className="px-4 py-2 text-center">Agendado</th><th className="px-4 py-2 text-right">Ações</th></tr></thead>
                            <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
-                             {order.items.filter(item => !itemSearchTerm || normalizeSKU(item.sku).includes(normalizeSKU(itemSearchTerm)) || normalizeSKU(item.factory).includes(normalizeSKU(itemSearchTerm))).map((item, idx) => {
+                             {order.items.filter(item => 
+                                !itemSearchTerm || 
+                                normalizeSKU(item.sku).includes(normalizeSKU(itemSearchTerm)) || 
+                                normalizeSKU(item.factory).includes(normalizeSKU(itemSearchTerm)) ||
+                                (item.desc && item.desc.toLowerCase().includes(itemSearchTerm.toLowerCase()))
+                             ).map((item, idx) => {
                                 const pending = item.qty - (item.invoiced || 0) - (item.scheduled || 0);
                                 const hasNF = item.history && item.history.some(h => h.nfNum);
                                 const itemUniqueId = `${order.id}-${idx}`; // ID Único para o toggle
